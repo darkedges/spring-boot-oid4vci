@@ -2,7 +2,9 @@ package com.darkedges.oid4vci.demo.issuer;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.annotation.Order;
 import org.springframework.security.config.Customizer;
+import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.web.SecurityFilterChain;
 
@@ -46,7 +48,25 @@ import org.springframework.security.web.SecurityFilterChain;
 @Configuration
 public class SecurityConfig {
 
+    /**
+     * The tenancy admin API (profile "tenancy") in a chain of its own, without the resource server. The AuthStack console sends its
+     * console token as {@code Authorization: Bearer}; in the main chain the resource server would take that for an issuer access
+     * token, fail to validate it, and answer 401 before the controller is reached, whatever {@code permitAll} says. The controller
+     * checks the token itself, with AuthStack.
+     */
     @Bean
+    @Order(1)
+    public SecurityFilterChain tenantAdminApi(HttpSecurity http) throws Exception {
+        http.securityMatcher("/admin/api/**")
+                .csrf(csrf -> csrf.disable())
+                .cors(Customizer.withDefaults())
+                .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .authorizeHttpRequests(auth -> auth.anyRequest().permitAll());
+        return http.build();
+    }
+
+    @Bean
+    @Order(2)
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         http.csrf(csrf -> csrf.disable())
                 // CORS for the AuthStack console's calls to the admin API (oid4vc.tenancy.admin.allowed-origins); none otherwise.
@@ -69,8 +89,6 @@ public class SecurityConfig {
                         // chain must let it through to that check rather than to a bearer-token
                         // challenge it can never satisfy.
                         .requestMatchers("/proofing/result").permitAll()
-                        // The tenancy admin API (profile "tenancy"): it checks the AuthStack console token itself, with AuthStack.
-                        .requestMatchers("/admin/api/**").permitAll()
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(oauth2 -> oauth2
                         .jwt(jwt -> {})

@@ -53,3 +53,6 @@ __pycache__/
 
 # Docker
 docker-compose.override.yml
+
+# docker-compose.tenancy.yml mounts the tenant CA from here when TENANT_CA_DIR is unset; never commit a CA.
+tenant-ca/

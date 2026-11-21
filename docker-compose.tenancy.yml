@@ -1,0 +1,72 @@
+# The issuer as a multi-tenant service: every AuthStack environment that enables credential issuance is its own issuer (see the
+# README's "Multi-tenant issuers", and oid4vp's docs/multi-tenancy.md). Layers on the other files:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.cloudflare.yml -f docker-compose.tenancy.yml up -d --build
+#
+# Tenants, their keys, the issuer's codes and offers, and proofing sessions are kept in the issuer-db PostgreSQL below, so they
+# survive a restart and the console's changes persist. Nothing secret is written here: every value comes from your shell (or an
+# untracked .env next to this file). A name with no "=" is passed only when it is set, so an optional setting left unset stays unset.
+#
+# Required (the issuer refuses to start without them):
+#   ISSUER_DATABASE_PASSWORD      the issuer-db password (it creates the database with it on first start)
+#   TENANT_KEY_ENCRYPTION_KEY     base64 of 32 random bytes: encrypts every tenant's private keys. BACK IT UP: losing it loses them.
+#   ISSUER_STORE_ENCRYPTION_KEY   base64 of 32 random bytes: encrypts codes, offers and claims in flight
+#   PROOFING_CALLBACK_SECRET      as before (docker-compose.yml)
+#     e.g.  export TENANT_KEY_ENCRYPTION_KEY="$(openssl rand -base64 32)"
+#
+# Optional:
+#   OID4VC_TENANCY_AUTHSTACK_API_URL          AuthStack's API (https://api.authstack.darkedges.com): console sign-in for the admin
+#                                             API, and verified custom domains
+#   OID4VC_TENANCY_AUTHSTACK_TOKEN_URL        } the platform worker (AuthStack's Administrator environment, listed in
+#   OID4VC_TENANCY_AUTHSTACK_CLIENT_ID        } CREDENTIAL_PLATFORM_WORKER_IDS): lets the issuer ask AuthStack which custom domain
+#   OID4VC_TENANCY_AUTHSTACK_CLIENT_SECRET    } belongs to which tenant. Without them: platform subdomains and paths only.
+#   OID4VC_TENANCY_ADMIN_ENABLED=true         with the API URL, the AuthStack console manages tenants
+#   OID4VC_TENANCY_ADMIN_ALLOWED_ORIGINS      the console's origin: https://console.authstack.darkedges.com
+#   TENANT_CA_DIR                             a directory holding ca.p12, the CA that certifies tenant keys; with
+#   OID4VC_TENANCY_KEYS_CA_KEYSTORE=file:/ca/ca.p12, OID4VC_TENANCY_KEYS_CA_KEYSTORE_PASSWORD and OID4VC_TENANCY_KEYS_CA_ALIAS.
+#                                             Without a CA, each tenant certificate is self-signed.
+#   ISSUER_PLATFORM_ORIGINS                   default https://issuer.zkp.au,http://localhost:8092,http://issuer:8092
+services:
+  issuer-db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=issuer
+      - POSTGRES_USER=issuer
+      - POSTGRES_PASSWORD=${ISSUER_DATABASE_PASSWORD:?set ISSUER_DATABASE_PASSWORD}
+    volumes:
+      - issuer-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U issuer -d issuer"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  issuer:
+    depends_on:
+      issuer-db:
+        condition: service_healthy
+    volumes:
+      - ${TENANT_CA_DIR:-./tenant-ca}:/ca:ro
+    environment:
+      # Overrides the other files' profile: cloudflare (or docker) as before, plus tenancy and its PostgreSQL stores.
+      - SPRING_PROFILES_ACTIVE=${ISSUER_BASE_PROFILE:-cloudflare},tenancy,postgres
+      - ISSUER_DATABASE_URL=jdbc:postgresql://issuer-db:5432/issuer
+      - ISSUER_DATABASE_USERNAME=issuer
+      - ISSUER_DATABASE_PASSWORD=${ISSUER_DATABASE_PASSWORD:?set ISSUER_DATABASE_PASSWORD}
+      - TENANT_KEY_ENCRYPTION_KEY=${TENANT_KEY_ENCRYPTION_KEY:?set TENANT_KEY_ENCRYPTION_KEY (base64 of 32 random bytes)}
+      - ISSUER_STORE_ENCRYPTION_KEY=${ISSUER_STORE_ENCRYPTION_KEY:?set ISSUER_STORE_ENCRYPTION_KEY (base64 of 32 random bytes)}
+      - PROOFING_CALLBACK_SECRET=${PROOFING_CALLBACK_SECRET:-}
+      - ISSUER_PLATFORM_ORIGINS
+      - OID4VC_TENANCY_AUTHSTACK_API_URL
+      - OID4VC_TENANCY_AUTHSTACK_TOKEN_URL
+      - OID4VC_TENANCY_AUTHSTACK_CLIENT_ID
+      - OID4VC_TENANCY_AUTHSTACK_CLIENT_SECRET
+      - OID4VC_TENANCY_ADMIN_ENABLED
+      - OID4VC_TENANCY_ADMIN_ALLOWED_ORIGINS
+      - OID4VC_TENANCY_KEYS_CA_KEYSTORE
+      - OID4VC_TENANCY_KEYS_CA_KEYSTORE_PASSWORD
+      - OID4VC_TENANCY_KEYS_CA_ALIAS
+
+volumes:
+  issuer-db:

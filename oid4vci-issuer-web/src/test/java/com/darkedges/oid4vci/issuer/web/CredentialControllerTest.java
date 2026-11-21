@@ -120,6 +120,30 @@ class CredentialControllerTest {
     }
 
     @Test
+    void rejectsAMalformedRequestAsAnInvalidCredentialRequest() throws Exception {
+        ECKey issuerKey = new ECKeyGenerator(Curve.P_256).keyID("issuer-1").generate();
+        CredentialIssuerMetadataTemplate template = new CredentialIssuerMetadataTemplate(
+                "/credential", Optional.of("/nonce"),
+                Map.of("UniversityDegreeCredential", new SdJwtVcCredentialConfiguration(
+                        "https://issuer.example.org/vct/UniversityDegree", List.of(), Map.of(), List.of(), List.of(), Optional.empty())));
+        NonceService nonceService = new NonceService(new InMemoryNonceStore(), CLOCK, Duration.ofMinutes(5));
+        CredentialController controller = new CredentialController(
+                template, new ProofOfPossessionValidator(nonceService, CLOCK, Duration.ofMinutes(5)), new InMemoryIssuedAccessTokenClaimsStore(),
+                Map.of(CredentialFormat.DC_SD_JWT, new SdJwtVcCredentialIssuanceService(issuerKey, List.of(), Duration.ofDays(365), CLOCK)));
+        var token = accessToken("subject-1", List.of("UniversityDegreeCredential"));
+
+        ObjectNode both = JsonNodeFactory.instance.objectNode();
+        both.put("credential_configuration_id", "UniversityDegreeCredential");
+        both.put("credential_identifier", "degree-1");
+        // Neither identifier (an empty object, and an empty body), or both: the wallet's error, never a 500.
+        for (String malformed : List.of("{}", "", both.toString())) {
+            assertThatThrownBy(() -> controller.credential(token, malformed, request()))
+                    .isInstanceOfSatisfying(Oid4vciException.class,
+                            e -> assertThat(e.errorCode()).isEqualTo(Oid4vciErrorCode.INVALID_CREDENTIAL_REQUEST));
+        }
+    }
+
+    @Test
     void rejectsARequestForAConfigurationTheTokenWasNotAuthorizedFor() throws Exception {
         ECKey issuerKey = new ECKeyGenerator(Curve.P_256).keyID("issuer-1").generate();
         CredentialIssuerMetadataTemplate template = new CredentialIssuerMetadataTemplate(

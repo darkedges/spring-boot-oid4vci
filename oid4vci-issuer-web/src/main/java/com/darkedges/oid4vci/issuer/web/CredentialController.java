@@ -111,7 +111,14 @@ public class CredentialController {
         } catch (Exception e) {
             throw new Oid4vciException(Oid4vciErrorCode.INVALID_REQUEST, "request body is not valid JSON", e);
         }
-        CredentialRequest request = CredentialRequestReader.read(body);
+        CredentialRequest request;
+        try {
+            request = CredentialRequestReader.read(body);
+        } catch (IllegalArgumentException e) {
+            // Neither or both of credential_configuration_id / credential_identifier: the wallet's request is malformed
+            // (OID4VCI 1.0, 8.3.1.2), not an issuer failure, so a 400, never a 500.
+            throw new Oid4vciException(Oid4vciErrorCode.INVALID_CREDENTIAL_REQUEST, e.getMessage(), e);
+        }
 
         String configurationId = request.credentialConfigurationId()
                 .orElseThrow(() -> new Oid4vciException(Oid4vciErrorCode.INVALID_REQUEST,

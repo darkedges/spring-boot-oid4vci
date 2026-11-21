@@ -27,6 +27,10 @@ public class BankSecurity {
         // contract still requires an array; all matches remain exact.
         return hasHrRole(membership) || ("groups".equals(claim) && "bank-hr".equals(membership));
     }
+    /** The passport issuers the bank trusts, with their pinned keys (see PassportTrust). */
+    @Bean PassportTrust passportTrust(org.springframework.core.env.Environment environment) throws Exception {
+        return PassportTrust.from(environment);
+    }
     @Bean ECKey issuerSigningKey(@Value("${bank.signing-key-file}") String file) throws Exception {
         ECKey key = ECKey.parse(Files.readString(Path.of(file)));
         if (!key.isPrivate() || !com.nimbusds.jose.jwk.Curve.P_256.equals(key.getCurve())) throw new IllegalArgumentException("Bank signing key must be private");
@@ -108,11 +112,24 @@ public class BankSecurity {
                 return new DefaultOidcUser(authorities, user.getIdToken(), user.getUserInfo());
             }))).build();
     }
+    /**
+     * Which service issues each format: the bank issues only its staff credential, as SD-JWT VC, through {@link #staffIssuance}. The
+     * library's extension point for this (it used to be replacing its SD-JWT service bean by name).
+     */
+    @Bean CredentialIssuanceServiceResolver credentialIssuanceServiceResolver(ECKey key, JdbcTemplate db, @Value("${bank.base-url}") String canonicalBase, org.springframework.beans.factory.ObjectProvider<DirectoryOutbox> directory) {
+        CredentialIssuanceService staff = staffIssuance(key, db, canonicalBase, directory);
+        return (context, format) -> format == CredentialFormat.DC_SD_JWT ? Optional.of(staff) : Optional.empty();
+    }
     // Internal authorization metadata lives in PostgreSQL, never in credential claims.
-    @Bean(name="sdJwtVcCredentialIssuanceService") CredentialIssuanceService staffIssuance(ECKey key, JdbcTemplate db, @Value("${bank.base-url}") String canonicalBase, org.springframework.beans.factory.ObjectProvider<DirectoryOutbox> directory) {
+    CredentialIssuanceService staffIssuance(ECKey key, JdbcTemplate db, String canonicalBase, org.springframework.beans.factory.ObjectProvider<DirectoryOutbox> directory) {
         var delegate = new SdJwtVcCredentialIssuanceService(key, List.of(), Duration.ofDays(30), Clock.systemUTC());
         return new CredentialIssuanceService() {
             public CredentialFormat format() { return CredentialFormat.DC_SD_JWT; }
+            /** One bank, one issuer: only the bank's own identifier, never another tenant's. */
+            @Override public String issue(IssuerContext context, CredentialConfiguration config, Map<String,String> claims, ECKey holder) {
+                if (!context.isDefaultTenant()) throw new IllegalArgumentException("The bank issues only as itself");
+                return issue(config, claims, holder, context.issuerIdentifier());
+            }
             public String issue(CredentialConfiguration config, Map<String,String> claims, ECKey holder, String base) {
                 if (!canonicalBase.equals(base)) throw new IllegalArgumentException("Use the canonical bank issuer URL"); UUID id = UUID.fromString(claims.get("staff_id"));
                 return new org.springframework.transaction.support.TransactionTemplate(new org.springframework.jdbc.datasource.DataSourceTransactionManager(Objects.requireNonNull(db.getDataSource()))).execute(tx -> {

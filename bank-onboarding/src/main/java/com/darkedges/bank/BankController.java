@@ -51,13 +51,17 @@ public class BankController {
     }
     private final JdbcTemplate db;
     private final PreAuthorizedCodeStore codes;
-    private final String base, passportIssuer, name;
-    private final ECKey passportKey, bankKey;
+    private final String base, name;
+    private final PassportTrust passports;
+    private final ECKey bankKey;
+    @org.springframework.beans.factory.annotation.Autowired
     public BankController(JdbcTemplate db, PreAuthorizedCodeStore codes, ECKey bankKey,
-        @Value("${bank.base-url}") String base, @Value("${bank.passport-issuer}") String passportIssuer,
-        @Value("${bank.passport-key-file}") String keyFile, @Value("${bank.name}") String name) throws Exception {
-        this.db=db; this.codes=codes; this.base=base; this.passportIssuer=passportIssuer; this.name=name;
-        passportKey=ECKey.parse(Files.readString(Path.of(keyFile))).toPublicJWK(); this.bankKey=bankKey.toPublicJWK();
+        @Value("${bank.base-url}") String base, PassportTrust passports, @Value("${bank.name}") String name) {
+        this.db=db; this.codes=codes; this.base=base; this.passports=passports; this.name=name; this.bankKey=bankKey.toPublicJWK();
+    }
+    /** One trusted passport issuer and its key file. */
+    public BankController(JdbcTemplate db, PreAuthorizedCodeStore codes, ECKey bankKey, String base, String passportIssuer, String keyFile, String name) throws Exception {
+        this(db, codes, bankKey, base, PassportTrust.single(passportIssuer, keyFile), name);
     }
     static String token() { byte[] b=new byte[32]; new SecureRandom().nextBytes(b); return Base64.getUrlEncoder().withoutPadding().encodeToString(b); }
     static String hash(String s) { try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(s.getBytes(java.nio.charset.StandardCharsets.UTF_8))); } catch(Exception e) { throw new IllegalStateException(e); } }
@@ -196,7 +200,7 @@ public class BankController {
     @GetMapping({"/onboarding", "/onboarding/"}) String progress(HttpSession session, Model m) {
         requirePortalApplicantPages();
         UUID id=applicant(session); var h=db.queryForMap("select * from bank_hire where id=?",id);
-        m.addAttribute("hire",h); m.addAttribute("passportIssuer",passportIssuer); return "onboarding";
+        m.addAttribute("hire",h); m.addAttribute("passportIssuer",String.join(", ",passports.issuers())); return "onboarding";
     }
     UUID applicant(HttpSession session) { Object id=session.getAttribute("hire"); require(id!=null,"Open your invitation first"); return UUID.fromString(id.toString()); }
     @PostMapping("/onboarding/present") String present(HttpSession session,Model m) { requirePortalApplicantPages(); UUID hire=applicant(session); require(awaitingIdentity(hire),"This invitation is not awaiting identity"); return start(hire,session,m); }
@@ -228,25 +232,28 @@ public class BankController {
         for(String field: type.equals("staff")?List.of("staff_id","bank_id"):List.of("given_name","family_name","birth_date","expiry_date","assurance_level","evidence")) claims.add(Map.of("path",List.of(field)));
         Instant cutoff=type.equals("passport")?passportCheckAfter((UUID)tx.get("hire_id")):null;
         if(cutoff!=null) claims.add(Map.of("path",List.of("proofed_at")));
-        var body=new LinkedHashMap<String,Object>(Map.of("expires_at",((java.sql.Timestamp)tx.get("expires_at")).toInstant().toString(),"client_id",client(id),"response_type","vp_token","response_mode","direct_post","response_uri",base+"/vp/response/"+id,"nonce",tx.get("nonce"),"state",id,"dcql_query",Map.of("credentials",List.of(Map.of("id",type,"format","dc+sd-jwt","meta",Map.of("vct_values",List.of(vct(type))),"claims",claims)))));
+        var body=new LinkedHashMap<String,Object>(Map.of("expires_at",((java.sql.Timestamp)tx.get("expires_at")).toInstant().toString(),"client_id",client(id),"response_type","vp_token","response_mode","direct_post","response_uri",base+"/vp/response/"+id,"nonce",tx.get("nonce"),"state",id,"dcql_query",Map.of("credentials",List.of(Map.of("id",type,"format","dc+sd-jwt","meta",Map.of("vct_values",vcts(type)),"claims",claims)))));
         if(cutoff!=null) body.put("passport_check_after",cutoff.toString());
         return JSON.writeValueAsString(body);
     }
     String client(String id) { return "redirect_uri:"+base+"/vp/response/"+id; }
-    String vct(String type) { return (type.equals("staff")?base:passportIssuer)+"/vct/"+(type.equals("staff")?"BankStaffCredential":"PassportCredential"); }
+    /** The types asked for: the bank's staff credential, or a passport from any trusted passport issuer. */
+    List<String> vcts(String type) { return type.equals("staff")?List.of(base+"/vct/BankStaffCredential"):passports.vcts(); }
     Map<String,Object> transaction(String id) { var rows=db.queryForList("select * from bank_presentation where id=? and expires_at>now()",id); require(rows.size()==1,"Presentation expired"); return rows.getFirst(); }
     @PostMapping(value="/vp/response/{id}",produces="application/json") @ResponseBody @Transactional String response(@PathVariable String id,@RequestParam String state,@RequestParam("vp_token") String vp) throws Exception {
         require(id.equals(state),"Wrong state");
         var tx=db.queryForMap("select * from bank_presentation where id=? and expires_at>now() for update",id); require(!Boolean.TRUE.equals(tx.get("complete")),"Presentation already used");
         String type=tx.get("hire_id")==null?"staff":"passport";
         var entry=JSON.readTree(vp).path(type); require(entry.isArray() && entry.size()==1 && entry.get(0).isTextual(),"Expected one credential");
-        var query=CredentialQuery.builder(type,CredentialFormat.DC_SD_JWT).meta(new SdJwtVcMeta(List.of(vct(type)))).build();
+        var query=CredentialQuery.builder(type,CredentialFormat.DC_SD_JWT).meta(new SdJwtVcMeta(vcts(type))).build();
         IssuerKeyResolver resolver=(issuer,kid,chain)-> {
-            if(!issuer.equals(type.equals("staff")?base:passportIssuer)) return Optional.empty();
-            return Optional.of(JSON.valueToTree((type.equals("staff")?bankKey:passportKey).toJSONObject()));
+            if(type.equals("staff")) return issuer.equals(base)?Optional.of(JSON.valueToTree(bankKey.toJSONObject())):Optional.empty();
+            return passports.key(issuer).map(k->JSON.valueToTree(k.toPublicJWK().toJSONObject()));
         };
         var verified=new SdJwtVerifier().verify(new PresentationEntry.StringPresentation(entry.get(0).asText()),new PresentationVerificationParams(query,(String)tx.get("nonce"),client(id),client(id),base+"/vp/response/"+id,Optional.empty(),resolver,Clock.systemUTC()));
-        var c=verified.verifiedClaims(); require(vct(type).equals(c.path("vct").asText()),"Wrong credential type"); require(c.has("exp") && c.path("exp").asLong()>Instant.now().getEpochSecond(),"Expired credential");
+        var c=verified.verifiedClaims(); String vct=c.path("vct").asText(), iss=c.path("iss").asText();
+        // A passport's type must be its own issuer's: one trusted issuer can't vouch for another's type.
+        require(type.equals("staff")?vcts(type).contains(vct)&&base.equals(iss):passports.accepts(iss,vct),"Wrong credential type"); require(c.has("exp") && c.path("exp").asLong()>Instant.now().getEpochSecond(),"Expired credential");
         UUID staff=null;
         if(type.equals("passport")) {
             UUID hire=(UUID)tx.get("hire_id"); require(freshPassport(c,passportCheckAfter(hire)),"A fresh Passport check is required. Complete Identity Proofing again."); require(PassportEvidencePolicy.accepts(c),"Passport credential lacks acceptable proofing evidence or is expired"); require(!c.path("family_name").asText().isBlank() && !c.path("assurance_level").asText().isBlank(),"Missing identity or assurance");

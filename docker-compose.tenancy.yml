@@ -26,6 +26,8 @@
 #   OID4VC_TENANCY_KEYS_CA_KEYSTORE=file:/ca/ca.p12, OID4VC_TENANCY_KEYS_CA_KEYSTORE_PASSWORD and OID4VC_TENANCY_KEYS_CA_ALIAS.
 #                                             Without a CA, each tenant certificate is self-signed.
 #   ISSUER_PLATFORM_ORIGINS                   default https://issuer.zkp.au,http://localhost:8092,http://issuer:8092
+#   ISSUER_DEFAULT_TENANT_ID / _SLUG          the AuthStack environment the built-in tenant (issuer.zkp.au) belongs to, and its
+#                                             slug (terraform/credential-services in AuthStack); default zkp / zkp
 services:
   issuer-db:
     image: postgres:17-alpine
@@ -58,6 +60,8 @@ services:
       - ISSUER_STORE_ENCRYPTION_KEY=${ISSUER_STORE_ENCRYPTION_KEY:?set ISSUER_STORE_ENCRYPTION_KEY (base64 of 32 random bytes)}
       - PROOFING_CALLBACK_SECRET=${PROOFING_CALLBACK_SECRET:-}
       - ISSUER_PLATFORM_ORIGINS
+      - ISSUER_DEFAULT_TENANT_ID
+      - ISSUER_DEFAULT_TENANT_SLUG
       - OID4VC_TENANCY_AUTHSTACK_API_URL
       - OID4VC_TENANCY_AUTHSTACK_TOKEN_URL
       - OID4VC_TENANCY_AUTHSTACK_CLIENT_ID

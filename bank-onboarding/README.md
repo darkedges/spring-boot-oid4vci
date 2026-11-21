@@ -92,8 +92,20 @@ Required environment variables:
 - `BANK_OIDC_CLIENT_ID`, `BANK_OIDC_CLIENT_SECRET`.
 - `BANK_PRIVATE_JWK_FILE`: path to a persistent private P-256 JWK. Generate one using `java tools/GenerateBankKey.java <path outside the repository>`. Restrict file access to the service account.
 - `PASSPORT_PUBLIC_JWK_FILE`: path to a trusted passport issuer public P-256 JWK obtained independently from its operator. Do not trust a key delivered inside an applicant credential. The issuer's `/jwks` publishes its public keys; select the intended signing key and save that single JWK object.
+- `ISSUER_STORE_ENCRYPTION_KEY`: base64 of 32 random bytes, kept secret. The bank's issuer keeps its pre-authorized codes, offers, nonces and the claims behind access tokens in the bank's PostgreSQL, encrypted with this key, so a staff offer survives a restart. Losing the key loses only what is in flight. Set `BANK_ISSUER_STORE_TYPE=memory` to keep them in memory instead.
 
-Defaults: bank name `Risk E Bank`, bank URL `https://hr.bank.darkedges.com`, passport issuer `https://issuer.zkp.au`. Set `BANK_NAME`, `BANK_BASE_URL`, and `PASSPORT_ISSUER` as needed. Use one canonical bank origin consistently. The bank issuer must not be exposed under additional hostnames.
+Defaults: bank name `Risk E Bank`, bank URL `https://hr.bank.darkedges.com`, passport issuer `https://issuer.zkp.au`. Set `BANK_NAME`, `BANK_BASE_URL`, and `PASSPORT_ISSUER` as needed. Use one canonical bank origin consistently. The bank issuer must not be exposed under additional hostnames: it issues only as `BANK_BASE_URL`, and refuses to issue as any other identifier or tenant.
+
+**Several passport issuers.** The platform issuer is multi-tenant, so a passport can come from `https://issuer.zkp.au`, a tenant such as `https://issuer.zkp.au/t/bank`, or a customer's own domain. To trust more than one, list them, each with its own pinned public key. The list replaces `PASSPORT_ISSUER` and `PASSPORT_PUBLIC_JWK_FILE`:
+
+```
+BANK_PASSPORT_ISSUERS_0_ISSUER=https://issuer.zkp.au           BANK_PASSPORT_ISSUERS_0_KEY_FILE=/keys/zkp-passport.jwk
+BANK_PASSPORT_ISSUERS_1_ISSUER=https://issuer.zkp.au/t/bank    BANK_PASSPORT_ISSUERS_1_KEY_FILE=/keys/bank-tenant-passport.jwk
+```
+
+- **The request:** the bank asks for a passport from any of the listed issuers.
+- **The check:** a passport is accepted only when its issuer is listed, it verifies against that issuer's own key, and its type is that issuer's (`<issuer>/vct/PassportCredential`).
+- **A tenant's key** is listed on the console's Credential Issuance page, and at the tenant's `/jwks`. Obtain it the same independent way. After a key rotation, add the new key before the old one is removed.
 
 ## HR provider setup
 

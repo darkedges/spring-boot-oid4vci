@@ -50,8 +50,12 @@ bank:
   token-debug-enabled: ${BANK_TOKEN_DEBUG_ENABLED:false}
   name: ${BANK_NAME:Risk E Bank}
   base-url: ${BANK_BASE_URL:https://hr.bank.darkedges.com}
+  # The passport issuers the bank trusts, each with its public key pinned (PassportTrust). One issuer:
   passport-issuer: ${PASSPORT_ISSUER:https://issuer.zkp.au}
   passport-key-file: ${PASSPORT_PUBLIC_JWK_FILE}
+  # Several (for example tenants of the platform issuer); when set, they replace the two lines above:
+  #   BANK_PASSPORT_ISSUERS_0_ISSUER=https://issuer.zkp.au   BANK_PASSPORT_ISSUERS_0_KEY_FILE=/keys/zkp.jwk
+  #   BANK_PASSPORT_ISSUERS_1_ISSUER=https://issuer.zkp.au/t/bank   BANK_PASSPORT_ISSUERS_1_KEY_FILE=/keys/bank-tenant.jwk
   signing-key-file: ${BANK_PRIVATE_JWK_FILE}
   # Where invitation links send applicants: this portal (portal) or the Authr applicant journey (authr, at applicant-entry-url).
   applicant-entry: ${BANK_APPLICANT_ENTRY:portal}
@@ -75,6 +79,12 @@ bank:
     staff-sign-in-per-minute: ${BANK_JOURNEY_STAFF_SIGN_IN_PER_MINUTE:60}
 oid4vci:
   issuer:
+    # What the issuer holds between requests (pre-authorized codes, offers, nonces, the claims behind access tokens) is kept in the
+    # bank's PostgreSQL, encrypted, so it survives a restart. ISSUER_STORE_ENCRYPTION_KEY: base64 of 32 random bytes, kept secret.
+    # BANK_ISSUER_STORE_TYPE=memory keeps them in memory instead, as before.
+    store:
+      type: ${BANK_ISSUER_STORE_TYPE:jdbc}
+      encryption-key: ${ISSUER_STORE_ENCRYPTION_KEY:}
     credential-configurations-supported: >
       {"BankStaffCredential":{"format":"dc+sd-jwt","vct":"/vct/BankStaffCredential","scope":"BankStaffCredential",
       "claims":[{"path":["staff_id"]},{"path":["bank_id"]},{"path":["given_name"]},{"path":["family_name"]},{"path":["department"]}],

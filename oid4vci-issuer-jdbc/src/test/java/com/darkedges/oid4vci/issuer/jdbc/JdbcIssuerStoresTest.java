@@ -212,4 +212,22 @@ class JdbcIssuerStoresTest {
         assertThat(table.sweep()).isEqualTo(1);
         assertThat(table.get(JdbcIssuerStores.NONCE, "new")).isPresent();
     }
+
+    @Test
+    void notificationsRoundTripAndExpire() {
+        var store = new JdbcIssuerStores.Notifications(table);
+        java.time.Instant now = java.time.Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MILLIS);
+        java.time.Instant later = now.plusSeconds(3600);
+        var issuance = new com.darkedges.oid4vci.issuer.IssuanceNotificationStore.Issuance("subject", "Staff",
+                java.util.Optional.of("hire-1"), now, later, java.util.Set.of("credential_deleted"));
+        String key = "t|" + java.util.UUID.randomUUID();
+        store.save(key, issuance);
+        org.assertj.core.api.Assertions.assertThat(store.find(key, now)).contains(issuance);
+        org.assertj.core.api.Assertions.assertThat(store.find(key, later)).isEmpty();
+        var event = new com.darkedges.oid4vci.issuer.IssuanceNotificationStore.Event("id", "Staff", "credential_deleted",
+                java.util.Optional.empty(), now);
+        store.saveEvents(key, java.util.List.of(event), later);
+        org.assertj.core.api.Assertions.assertThat(store.events(key, now)).containsExactly(event);
+        org.assertj.core.api.Assertions.assertThat(store.events(key, later)).isEmpty();
+    }
 }

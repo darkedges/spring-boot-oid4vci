@@ -35,6 +35,42 @@ public final class JdbcIssuerStores {
     public static final String DPOP_JTI = "dpop_jti";
     public static final String ATTESTATION_POP_JTI = "attestation_pop_jti";
     public static final String TENANT_OFFER_REFERENCE = "tenant_offer_reference";
+    public static final String NOTIFICATION = "notification";
+    public static final String NOTIFICATION_EVENTS = "notification_events";
+
+    /** What a wallet may later notify about, and what it said, until the notification token expires. */
+    public static final class Notifications implements com.darkedges.oid4vci.issuer.IssuanceNotificationStore {
+        private final IssuerEntryTable table;
+
+        public Notifications(IssuerEntryTable table) {
+            this.table = table;
+        }
+
+        @Override
+        public void save(String notificationKey, Issuance issuance) {
+            table.put(NOTIFICATION, notificationKey, IssuerEntryCodec.bytes(IssuerEntryCodec.issuance(issuance)), issuance.expiresAt());
+        }
+
+        @Override
+        public Optional<Issuance> find(String notificationKey, Instant now) {
+            return table.get(NOTIFICATION, notificationKey)
+                    .filter(e -> e.expiresAt().isAfter(now))
+                    .map(e -> IssuerEntryCodec.issuance(IssuerEntryCodec.read(e.payload())));
+        }
+
+        @Override
+        public void saveEvents(String referenceKey, java.util.List<Event> events, Instant expiresAt) {
+            table.put(NOTIFICATION_EVENTS, referenceKey, IssuerEntryCodec.bytes(IssuerEntryCodec.events(events)), expiresAt);
+        }
+
+        @Override
+        public java.util.List<Event> events(String referenceKey, Instant now) {
+            return table.get(NOTIFICATION_EVENTS, referenceKey)
+                    .filter(e -> e.expiresAt().isAfter(now))
+                    .map(e -> IssuerEntryCodec.events(IssuerEntryCodec.read(e.payload())))
+                    .orElse(java.util.List.of());
+        }
+    }
 
     /** Single use, until the session's expiry. */
     public static final class PreAuthorizedCodes implements PreAuthorizedCodeStore {

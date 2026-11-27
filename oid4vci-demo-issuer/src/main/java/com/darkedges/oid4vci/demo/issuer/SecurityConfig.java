@@ -16,7 +16,7 @@ import org.springframework.security.web.SecurityFilterChain;
  * standard OAuth2 bearer access token via {@code oauth2ResourceServer()} — this app applies that
  * explicitly, since {@code oid4vci-spring-boot-autoconfigure} deliberately never does.
  *
- * <p>{@code .dPoP(Customizer.withDefaults())} opts into Spring Security 7.1's native DPoP (RFC 9449)
+ * <p>{@code .dPoP(...)} opts into Spring Security 7.1's native DPoP (RFC 9449)
  * resource-server support: when {@code TokenController} mints a sender-constrained access token (a
  * {@code cnf.jkt} claim, from a {@code DPoP} header on the token request — see
  * {@code DpopProofValidator}), that token can no longer be presented via the plain {@code Bearer} scheme
@@ -68,7 +68,8 @@ public class SecurityConfig {
 
     @Bean
     @Order(2)
-    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+    public SecurityFilterChain securityFilterChain(HttpSecurity http,
+            com.darkedges.oid4vci.issuer.web.IssuerContextResolver issuers) throws Exception {
         http.csrf(csrf -> csrf.disable())
                 // CORS for the AuthStack console's calls to the admin API (oid4vc.tenancy.admin.allowed-origins); none otherwise.
                 .cors(Customizer.withDefaults())
@@ -93,7 +94,8 @@ public class SecurityConfig {
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(oauth2 -> oauth2
                         .jwt(jwt -> {})
-                        .dPoP(Customizer.withDefaults()));
+                        .dPoP(dpop -> dpop.authenticationConverter(
+                                new com.darkedges.oid4vci.issuer.web.IssuerDpopAuthenticationConverter(issuers))));
         return http.build();
     }
 }

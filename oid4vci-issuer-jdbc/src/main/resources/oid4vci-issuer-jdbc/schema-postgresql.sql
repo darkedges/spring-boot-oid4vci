@@ -2,7 +2,7 @@
 -- oid4vci.issuer.store.initialize-schema=true.
 --
 -- kind  what it is: pre_authorized_code, authorization_code, par, nonce, access_token_claims, credential_offer, dpop_jti,
---       attestation_pop_jti
+--       attestation_pop_jti, tenant_offer_reference, notification, notification_events
 -- key   SHA-256 (hex) of the tenant-scoped key: codes and nonces are bearer secrets, so they are never stored as such
 -- payload AES-256-GCM under oid4vci.issuer.store.encryption-key, bound to kind and key; NULL for nonces and replay records
 

@@ -51,6 +51,7 @@ import java.util.regex.Pattern;
  * <pre>
  * POST   /tenant-api/v1/offers                 { credentialConfigurationIds, claims, reference, holderKeyThumbprint?, expiresIn? }
  * DELETE /tenant-api/v1/offers/{reference}
+ * GET    /tenant-api/v1/offers/{reference}/notifications     what wallets said became of its credentials
  * </pre>
  * Called as the tenant, with a token from an application of the tenant's AuthStack environment that the tenant lists
  * ({@link TenantCallers}). An offer's {@code reference} is the tenant's own (a hire, say): creating an offer again for a live reference
@@ -175,6 +176,33 @@ public class TenantOfferController {
         references.remove(scopedReference);
         audit.info("tenant {} withdrew the offer for reference {}", context.tenantId(), reference);
         return ResponseEntity.noContent().build();
+    }
+
+    private com.darkedges.oid4vci.issuer.IssuanceNotifications notifications;
+
+    public void setNotifications(com.darkedges.oid4vci.issuer.IssuanceNotifications notifications) {
+        this.notifications = notifications;
+    }
+
+    @org.springframework.web.bind.annotation.GetMapping("/{reference}/notifications")
+    public ResponseEntity<String> notifications(@RequestHeader(name = "Authorization", required = false) String authorization,
+                                                @PathVariable String reference, HttpServletRequest request) {
+        Optional<ResponseEntity<String>> refused = refuseCaller(authorization, request);
+        if (refused.isPresent()) return refused.get();
+        if (!REFERENCE.matcher(reference).matches()) return error(400, "invalid_request", "Not a reference");
+        ObjectNode body = MAPPER.createObjectNode();
+        var list = body.putArray("notifications");
+        if (notifications != null) {
+            for (var event : notifications.events(issuers.resolve(request), reference)) {
+                ObjectNode node = list.addObject()
+                        .put("notificationId", event.notificationId())
+                        .put("credentialConfigurationId", event.credentialConfigurationId())
+                        .put("event", event.event())
+                        .put("receivedAt", event.receivedAt().toString());
+                event.description().ifPresent(d -> node.put("description", d));
+            }
+        }
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).contentType(MediaType.APPLICATION_JSON).body(body.toString());
     }
 
     /** Empty when the caller may act for the request's tenant; otherwise the answer to give. */

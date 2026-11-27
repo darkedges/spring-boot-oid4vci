@@ -108,11 +108,23 @@ public class CredentialController {
         this.issuanceHook = issuanceHook == null ? IssuanceHook.NONE : issuanceHook;
     }
 
+    private com.darkedges.oid4vci.issuer.IssuanceNotifications notifications;
+
+    /** Lets wallets notify what became of a credential: each response then carries a {@code notification_id}. Off by default. */
+    public void setNotifications(com.darkedges.oid4vci.issuer.IssuanceNotifications notifications) {
+        this.notifications = notifications;
+    }
+
     @PostMapping(value = "${oid4vci.issuer.credential-endpoint-path:/credential}", produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<String> credential(
             @AuthenticationPrincipal Jwt accessToken, @RequestBody String rawBody, HttpServletRequest servletRequest) {
         IssuerContext context = issuers.resolve(servletRequest);
         CredentialIssuerMetadata metadata = templates.credentialIssuer(context).resolve(context.issuerIdentifier());
+        // A notification token is for the Notification Endpoint alone.
+        if (com.darkedges.oid4vci.issuer.IssuanceNotifications.TOKEN_USE.equals(
+                accessToken.getClaimAsString(com.darkedges.oid4vci.issuer.IssuanceNotifications.TOKEN_USE_CLAIM))) {
+            throw new Oid4vciException(Oid4vciErrorCode.INVALID_TOKEN, "this token only authorizes notifications");
+        }
         JsonNode body;
         try {
             body = MAPPER.readTree(rawBody);
@@ -198,7 +210,30 @@ public class CredentialController {
         }
 
         CredentialResponse response = new CredentialResponse(Optional.of(issued), Optional.empty());
-        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(CredentialResponseWriter.write(response).toString());
+        com.fasterxml.jackson.databind.node.ObjectNode json = CredentialResponseWriter.write(response);
+        if (notifications != null) {
+            addNotification(json, context, accessToken.getSubject(), configurationId, reference, thumbprint(holderKeys.get(0)));
+        }
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(json.toString());
+    }
+
+    /**
+     * {@code notification_id}, and this issuer's own {@code notification_authorization}: the token for notifying later (see
+     * {@code IssuanceNotifications}). The credentials are already issued, so a failure here only leaves them out.
+     */
+    private void addNotification(com.fasterxml.jackson.databind.node.ObjectNode json, IssuerContext context, String subject,
+                                 String configurationId, java.util.Optional<String> reference, String holderKeyThumbprint) {
+        try {
+            var registration = notifications.register(context, subject, configurationId, reference, holderKeyThumbprint);
+            json.put("notification_id", registration.notificationId());
+            json.putObject("notification_authorization")
+                    .put("access_token", registration.token())
+                    .put("token_type", "DPoP")
+                    .put("expires_in", registration.expiresIn());
+        } catch (RuntimeException e) {
+            System.getLogger(CredentialController.class.getName())
+                    .log(System.Logger.Level.WARNING, "credential issued without a notification_id: " + e);
+        }
     }
 
     private static String thumbprint(ECKey key) {

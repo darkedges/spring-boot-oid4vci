@@ -52,12 +52,21 @@ public class IssuerMetadataController {
         this.issuers = issuers;
     }
 
+    private String notificationEndpointPath;
+
+    /** Advertises {@code notification_endpoint} at this path of each issuer. Not advertised by default. */
+    public void setNotificationEndpointPath(String notificationEndpointPath) {
+        this.notificationEndpointPath = notificationEndpointPath;
+    }
+
     @GetMapping("/.well-known/openid-credential-issuer")
     public ResponseEntity<String> metadata(HttpServletRequest request) {
         IssuerContext context = issuers.resolve(request);
+        var metadata = CredentialIssuerMetadataWriter.write(templates.credentialIssuer(context).resolve(context.issuerIdentifier()));
+        if (notificationEndpointPath != null) metadata.put("notification_endpoint", context.url(notificationEndpointPath));
         return ResponseEntity.ok()
                 .contentType(MediaType.APPLICATION_JSON)
                 .cacheControl(CacheControl.maxAge(Duration.ofMinutes(5)))
-                .body(CredentialIssuerMetadataWriter.write(templates.credentialIssuer(context).resolve(context.issuerIdentifier())).toString());
+                .body(metadata.toString());
     }
 }

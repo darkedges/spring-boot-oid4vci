@@ -75,6 +75,12 @@ public class Oid4vciIssuerJdbcAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
+    public com.darkedges.oid4vci.issuer.TenantOfferReferences tenantOfferReferences(IssuerEntryTable table) {
+        return new JdbcIssuerStores.TenantOffers(table, Clock.systemUTC());
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
     public CredentialOfferStore credentialOfferStore(IssuerEntryTable table, IssuerStoreProperties properties) {
         return new JdbcIssuerStores.CredentialOffers(table, properties.getOfferTtl(), Clock.systemUTC());
     }

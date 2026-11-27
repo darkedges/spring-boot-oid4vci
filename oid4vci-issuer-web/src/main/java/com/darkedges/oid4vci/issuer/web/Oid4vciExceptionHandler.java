@@ -54,6 +54,19 @@ public class Oid4vciExceptionHandler {
                 .body(body.toString());
     }
 
+    /**
+     * The tenant couldn't be asked whether a credential may be issued (its issuance hook is down or answered unexpectedly): nothing was
+     * issued, and the wallet may try again. 503, not a protocol error: the request was fine.
+     */
+    @ExceptionHandler(com.darkedges.oid4vci.issuer.IssuanceHook.IssuanceHookUnavailableException.class)
+    public ResponseEntity<String> handle(com.darkedges.oid4vci.issuer.IssuanceHook.IssuanceHookUnavailableException e) {
+        ObjectNode body = JsonNodeFactory.instance.objectNode();
+        body.put("error", "temporarily_unavailable");
+        body.put("error_description", "The issuer could not confirm this credential with its tenant. Try again shortly.");
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).cacheControl(CacheControl.noStore())
+                .header("Retry-After", "5").contentType(MediaType.APPLICATION_JSON).body(body.toString());
+    }
+
     /** As {@link #handle(Oid4vciException, jakarta.servlet.http.HttpServletRequest)}, for a single-tenant issuer. */
     public ResponseEntity<String> handle(Oid4vciException e) {
         return handle(e, null);

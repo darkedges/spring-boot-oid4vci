@@ -157,6 +157,28 @@ public final class TenantIssuerSettings implements IssuerMetadataTemplates, Clie
                 problems.add("\"" + CLIENT_ATTESTATION + ".trustedIssuerKey\" must be an EC public JWK");
             }
         }
+        // The tenant's issuance hook (TenantIssuanceHook): HTTPS, or plain HTTP to this machine for development.
+        JsonNode hook = settings.path("issuanceHook").path("url");
+        if (!hook.isMissingNode() && !hook.isNull()) {
+            String problem = null;
+            try {
+                java.net.URI url = java.net.URI.create(hook.asText());
+                boolean local = "http".equals(url.getScheme()) && java.util.Set.of("localhost", "127.0.0.1").contains(url.getHost());
+                if (!hook.isTextual() || url.getHost() == null || !("https".equals(url.getScheme()) || local) || url.getQuery() != null || url.getFragment() != null) {
+                    problem = "\"issuanceHook.url\" must be an https URL without a query or fragment";
+                }
+            } catch (IllegalArgumentException e) {
+                problem = "\"issuanceHook.url\" is not a URL";
+            }
+            if (problem != null) problems.add(problem);
+        }
+        // Who may call the tenant APIs (TenantCallers): application ids of the tenant's AuthStack environment.
+        JsonNode clients = settings.path("tenantApi").path("clients");
+        if (!clients.isMissingNode() && !clients.isNull()) {
+            boolean ok = clients.isArray() && clients.size() <= 20;
+            if (ok) for (JsonNode client : clients) ok &= client.isTextual() && client.asText().matches("[A-Za-z0-9-]{1,64}");
+            if (!ok) problems.add("\"tenantApi.clients\" is a list of at most 20 application ids");
+        }
         return problems;
     }
 }

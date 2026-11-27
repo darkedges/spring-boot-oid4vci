@@ -375,8 +375,18 @@ public class Oid4vciIssuerAutoConfiguration {
     @ConditionalOnMissingBean
     public CredentialController credentialController(
             IssuerMetadataTemplates templates, ProofOfPossessionValidator proofValidator, IssuedAccessTokenClaimsStore claimsStore,
-            CredentialIssuanceServiceResolver issuanceServices, IssuerContextResolver issuers) {
-        return new CredentialController(templates, proofValidator, claimsStore, issuanceServices, issuers, Clock.systemUTC());
+            CredentialIssuanceServiceResolver issuanceServices, IssuerContextResolver issuers,
+            ObjectProvider<com.darkedges.oid4vci.issuer.IssuanceHook> issuanceHook) {
+        CredentialController controller = new CredentialController(templates, proofValidator, claimsStore, issuanceServices, issuers, Clock.systemUTC());
+        issuanceHook.ifAvailable(controller::setIssuanceHook);
+        return controller;
+    }
+
+    /** The tenant offer API's live offers by the tenant's reference; in memory unless a store module provides one. */
+    @Bean
+    @ConditionalOnMissingBean
+    public com.darkedges.oid4vci.issuer.TenantOfferReferences tenantOfferReferences() {
+        return new com.darkedges.oid4vci.issuer.TenantOfferReferences.InMemory(Clock.systemUTC());
     }
 
     @Bean

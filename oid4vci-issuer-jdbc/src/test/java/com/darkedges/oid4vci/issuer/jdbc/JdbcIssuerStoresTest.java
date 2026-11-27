@@ -152,6 +152,23 @@ class JdbcIssuerStoresTest {
     }
 
     @Test
+    void aTenantsOfferIsFoundByItsReferenceUntilItExpiresOrIsWithdrawn() {
+        var offers = new JdbcIssuerStores.TenantOffers(table, Clock.systemUTC());
+        Instant expires = Instant.now().plusSeconds(600).truncatedTo(java.time.temporal.ChronoUnit.MILLIS);
+        var offer = new com.darkedges.oid4vci.issuer.TenantOfferReferences.OfferReference("env-bank|code-1", "{\"credential_issuer\":\"https://issuer.bank.test\"}", expires);
+        offers.save("env-bank|hire-1", offer);
+        assertThat(offers.find("env-bank|hire-1")).contains(offer);
+        // Another tenant's reference of the same name is another key.
+        assertThat(offers.find("env-shop|hire-1")).isEmpty();
+        // Stored encrypted, under its kind.
+        String stored = jdbc.sql("SELECT encode(payload, 'escape') FROM oid4vci_issuer_entry WHERE kind = 'tenant_offer_reference'").query(String.class).single();
+        assertThat(stored).doesNotContain("code-1").doesNotContain("issuer.bank.test");
+        assertThat(new JdbcIssuerStores.TenantOffers(table, Clock.offset(Clock.systemUTC(), Duration.ofHours(1))).find("env-bank|hire-1")).isEmpty();
+        offers.remove("env-bank|hire-1");
+        assertThat(offers.find("env-bank|hire-1")).isEmpty();
+    }
+
+    @Test
     void offersAreKeptForTheirTtl() throws Exception {
         CredentialOffer offer = CredentialOfferReader.read(new ObjectMapper().readTree(
                 "{\"credential_issuer\":\"https://bank.issuer.test\",\"credential_configuration_ids\":[\"Passport\"],"

@@ -52,12 +52,13 @@ public class SecurityConfig {
      * The tenancy admin API (profile "tenancy") in a chain of its own, without the resource server. The AuthStack console sends its
      * console token as {@code Authorization: Bearer}; in the main chain the resource server would take that for an issuer access
      * token, fail to validate it, and answer 401 before the controller is reached, whatever {@code permitAll} says. The controller
-     * checks the token itself, with AuthStack.
+     * checks the token itself, with AuthStack. The tenant APIs ({@code /tenant-api/**}, called by a tenant's backend with its AuthStack
+     * worker token) are the same case: their controllers check the token ({@code TenantCallers}).
      */
     @Bean
     @Order(1)
     public SecurityFilterChain tenantAdminApi(HttpSecurity http) throws Exception {
-        http.securityMatcher("/admin/api/**")
+        http.securityMatcher("/admin/api/**", "/tenant-api/**")
                 .csrf(csrf -> csrf.disable())
                 .cors(Customizer.withDefaults())
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))

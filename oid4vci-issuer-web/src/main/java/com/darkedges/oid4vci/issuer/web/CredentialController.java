@@ -3,6 +3,8 @@ package com.darkedges.oid4vci.issuer.web;
 import com.darkedges.oid4vci.issuer.CredentialIssuanceServiceResolver;
 import com.darkedges.oid4vci.issuer.IssuerMetadataTemplates;
 import com.darkedges.oid4vci.issuer.IssuerContext;
+import com.darkedges.oid4vci.issuer.IssuanceConstraints;
+import com.darkedges.oid4vci.issuer.IssuanceHook;
 import com.darkedges.oid4vci.core.credential.CredentialRequest;
 import com.darkedges.oid4vci.core.credential.CredentialRequestReader;
 import com.darkedges.oid4vci.core.credential.CredentialResponse;
@@ -74,6 +76,7 @@ public class CredentialController {
     private final CredentialIssuanceServiceResolver issuanceServices;
     private final IssuerContextResolver issuers;
     private final Clock clock;
+    private IssuanceHook issuanceHook = IssuanceHook.NONE;
 
     public CredentialController(
             CredentialIssuerMetadataTemplate template, ProofOfPossessionValidator proofValidator,
@@ -98,6 +101,11 @@ public class CredentialController {
         this.issuanceServices = issuanceServices;
         this.issuers = issuers;
         this.clock = clock;
+    }
+
+    /** The tenant's say in issuing a credential of an offer that carries a reference ({@link IssuanceHook}). None by default. */
+    public void setIssuanceHook(IssuanceHook issuanceHook) {
+        this.issuanceHook = issuanceHook == null ? IssuanceHook.NONE : issuanceHook;
     }
 
     @PostMapping(value = "${oid4vci.issuer.credential-endpoint-path:/credential}", produces = MediaType.APPLICATION_JSON_VALUE)
@@ -151,7 +159,7 @@ public class CredentialController {
         // checked by the resource server long before this point; this guards the claims themselves,
         // which for a real issuer are somebody's passport details and should not outlive their use.
         // Scoped to this tenant: a token's subject is only known to the tenant that issued it.
-        Map<String, String> claims = context.scopeIfValid(accessToken.getSubject())
+        Map<String, String> stored = context.scopeIfValid(accessToken.getSubject())
                 .flatMap(subject -> claimsStore.find(subject, clock.instant()))
                 .orElseThrow(() -> new Oid4vciException(Oid4vciErrorCode.INVALID_TOKEN, "no claims on file for this access token"));
 
@@ -161,13 +169,43 @@ public class CredentialController {
                     "no issuance service registered for format: " + configuration.format());
         }
 
-        List<IssuedCredential> issued = new ArrayList<>();
+        // The offer's constraints travel with its claims (IssuanceConstraints), and never reach the credential.
+        Map<String, String> claims = IssuanceConstraints.credentialClaims(stored);
+        java.util.Optional<String> reference = IssuanceConstraints.reference(stored);
+        java.util.Optional<String> pinnedHolder = IssuanceConstraints.holderKeyThumbprint(stored);
+
+        // Every proof is checked, and the tenant asked about each, before anything is signed: a batch is issued whole or not at all.
+        List<ECKey> holderKeys = new ArrayList<>();
+        List<IssuanceHook.Attempt> attempts = new ArrayList<>();
         for (String proofJwt : proofJwts) {
             ECKey holderKey = proofValidator.verify(context, proofJwt, metadata.credentialIssuer().toString());
-            issued.add(new IssuedCredential(issuanceService.issue(context, configuration, claims, holderKey)));
+            String thumbprint = thumbprint(holderKey);
+            if (pinnedHolder.isPresent() && !pinnedHolder.get().equals(thumbprint)) {
+                throw new Oid4vciException(Oid4vciErrorCode.INVALID_PROOF, "the proof's key is not the key this offer is bound to");
+            }
+            IssuanceHook.Attempt attempt = reference
+                    .map(r -> new IssuanceHook.Attempt(r, configurationId, configuration.format().identifier(), thumbprint))
+                    .orElse(null);
+            if (attempt != null) issuanceHook.authorize(context, attempt);
+            holderKeys.add(holderKey);
+            attempts.add(attempt);
+        }
+        List<IssuedCredential> issued = new ArrayList<>();
+        for (int i = 0; i < holderKeys.size(); i++) {
+            String credential = issuanceService.issue(context, configuration, claims, holderKeys.get(i));
+            issued.add(new IssuedCredential(credential));
+            if (attempts.get(i) != null) issuanceHook.issued(context, attempts.get(i), credential);
         }
 
         CredentialResponse response = new CredentialResponse(Optional.of(issued), Optional.empty());
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(CredentialResponseWriter.write(response).toString());
+    }
+
+    private static String thumbprint(ECKey key) {
+        try {
+            return key.computeThumbprint().toString();
+        } catch (com.nimbusds.jose.JOSEException e) {
+            throw new Oid4vciException(Oid4vciErrorCode.INVALID_PROOF, "the proof's key has no thumbprint", e);
+        }
     }
 }

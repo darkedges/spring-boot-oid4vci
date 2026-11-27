@@ -57,6 +57,17 @@ bank:
   #   BANK_PASSPORT_ISSUERS_0_ISSUER=https://issuer.zkp.au   BANK_PASSPORT_ISSUERS_0_KEY_FILE=/keys/zkp.jwk
   #   BANK_PASSPORT_ISSUERS_1_ISSUER=https://issuer.zkp.au/t/bank   BANK_PASSPORT_ISSUERS_1_KEY_FILE=/keys/bank-tenant.jwk
   signing-key-file: ${BANK_PRIVATE_JWK_FILE}
+  # The bank as a tenant of the platform's shared credential issuer (docs/migration-to-shared-services.md). With an issuer set, staff
+  # sign-in also trusts staff credentials it issued; with issue-via=shared, new staff offers come from it (and its issuance hook,
+  # /api/issuer-hook/v1, enforces the bank's rules). Outputs of terraform/risk-e-bank in AuthStack: credential_services_env.
+  credentials:
+    issuer: ${BANK_CREDENTIALS_ISSUER:}
+    issue-via: ${BANK_ISSUE_VIA:embedded}
+    token-url: ${BANK_CREDENTIALS_TOKEN_URL:}
+    client-id: ${BANK_CREDENTIALS_CLIENT_ID:}
+    client-secret: ${BANK_CREDENTIALS_CLIENT_SECRET:}
+    # The mobile wallet collects SD-JWT VC only for now (oid4vci-wallet#3); add BankStaffCredentialMdoc once it collects mdocs.
+    offer-configurations: ${BANK_CREDENTIALS_OFFER_CONFIGURATIONS:BankStaffCredential}
   # Where invitation links send applicants: this portal (portal) or the Authr applicant journey (authr, at applicant-entry-url).
   applicant-entry: ${BANK_APPLICANT_ENTRY:portal}
   applicant-entry-url: ${BANK_APPLICANT_ENTRY_URL:}

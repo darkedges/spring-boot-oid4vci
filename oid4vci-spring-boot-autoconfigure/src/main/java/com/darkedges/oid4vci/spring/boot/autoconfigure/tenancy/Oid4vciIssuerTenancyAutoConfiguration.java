@@ -93,4 +93,26 @@ public class Oid4vciIssuerTenancyAutoConfiguration {
     public TenantSettingsValidator tenantSettingsValidator(Oid4vciIssuerProperties properties) {
         return settings -> TenantIssuerSettings.problems(settings, properties);
     }
+
+    /** Each tenant's issuance hook, from its settings (issuanceHook.url); none for a tenant without one. */
+    @Bean
+    @ConditionalOnMissingBean(com.darkedges.oid4vci.issuer.IssuanceHook.class)
+    public TenantIssuanceHook tenantIssuanceHook(TenantRepository tenants, IssuerKeys keys) {
+        java.util.concurrent.ScheduledExecutorService retries = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "issuance-hook-retries");
+            thread.setDaemon(true);
+            return thread;
+        });
+        java.net.http.HttpClient http = java.net.http.HttpClient.newBuilder().connectTimeout(TenantIssuanceHook.TIMEOUT).build();
+        return new TenantIssuanceHook(tenants, keys, http, retries, Clock.systemUTC());
+    }
+
+    /** The tenant API for offers: the tenant's backend creates and withdraws offers for its people. */
+    @Bean
+    @ConditionalOnMissingBean
+    public TenantOfferController tenantOfferController(com.darkedges.oid4vc.tenancy.tenantapi.TenantCallers callers, IssuerContextResolver issuers,
+            com.darkedges.oid4vci.issuer.IssuerMetadataTemplates templates, com.darkedges.oid4vci.issuer.PreAuthorizedCodeService codes,
+            com.darkedges.oid4vci.issuer.PreAuthorizedCodeStore codeStore, com.darkedges.oid4vci.issuer.TenantOfferReferences references) {
+        return new TenantOfferController(callers, issuers, templates, codes, codeStore, references, Clock.systemUTC());
+    }
 }

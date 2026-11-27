@@ -34,6 +34,7 @@ public final class JdbcIssuerStores {
     public static final String CREDENTIAL_OFFER = "credential_offer";
     public static final String DPOP_JTI = "dpop_jti";
     public static final String ATTESTATION_POP_JTI = "attestation_pop_jti";
+    public static final String TENANT_OFFER_REFERENCE = "tenant_offer_reference";
 
     /** Single use, until the session's expiry. */
     public static final class PreAuthorizedCodes implements PreAuthorizedCodeStore {
@@ -157,6 +158,39 @@ public final class JdbcIssuerStores {
             return table.get(CREDENTIAL_OFFER, offerId)
                     .filter(e -> e.expiresAt().isAfter(clock.instant()))
                     .map(e -> IssuerEntryCodec.offer(IssuerEntryCodec.read(e.payload())));
+        }
+    }
+
+    /** A tenant's live offers by its own reference (the tenant offer API), until the offer expires. */
+    public static final class TenantOffers implements com.darkedges.oid4vci.issuer.TenantOfferReferences {
+        private final IssuerEntryTable table;
+        private final Clock clock;
+
+        public TenantOffers(IssuerEntryTable table, Clock clock) {
+            this.table = table;
+            this.clock = clock;
+        }
+
+        @Override
+        public void save(String scopedReference, OfferReference offer) {
+            com.fasterxml.jackson.databind.node.ObjectNode node = com.fasterxml.jackson.databind.node.JsonNodeFactory.instance.objectNode()
+                    .put("code", offer.scopedCode()).put("offer", offer.offerJson()).put("expiresAt", offer.expiresAt().toString());
+            table.put(TENANT_OFFER_REFERENCE, scopedReference, IssuerEntryCodec.bytes(node), offer.expiresAt());
+        }
+
+        @Override
+        public Optional<OfferReference> find(String scopedReference) {
+            return table.get(TENANT_OFFER_REFERENCE, scopedReference)
+                    .filter(e -> e.expiresAt().isAfter(clock.instant()))
+                    .map(e -> {
+                        com.fasterxml.jackson.databind.JsonNode node = IssuerEntryCodec.read(e.payload());
+                        return new OfferReference(node.path("code").asText(), node.path("offer").asText(), java.time.Instant.parse(node.path("expiresAt").asText()));
+                    });
+        }
+
+        @Override
+        public void remove(String scopedReference) {
+            table.remove(TENANT_OFFER_REFERENCE, scopedReference);
         }
     }
 

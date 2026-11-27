@@ -284,6 +284,32 @@ SPRING_PROFILES_ACTIVE=cloudflare,tenancy,postgres
   - a setting a tenant leaves out falls back to the deployment's `oid4vci.issuer.*` value;
   - the console's admin API refuses settings that wouldn't work.
 
+**Offers from the tenant's own backend (the tenant offer API).** A tenant's system (a bank, say) creates offers for its people:
+```
+POST   /tenant-api/v1/offers           { credentialConfigurationIds, claims, reference, holderKeyThumbprint?, expiresIn? }
+DELETE /tenant-api/v1/offers/{reference}
+```
+- **Who may call:** an application of the tenant's own AuthStack environment that the tenant lists in its settings
+  (`tenantApi.clients`), with a client-credentials token. See oid4vp's `docs/multi-tenancy.md`, "Tenant APIs". The application's
+  security configuration must let `/tenant-api/**` through without the resource server, as for `/admin/api/**`; the controller checks
+  the token itself.
+- **`reference`:** the tenant's own name for the offer, such as a hire. While its offer is live, creating it again returns the same one;
+  `DELETE` withdraws it.
+- **`holderKeyThumbprint`:** pins the key the wallet must prove (RFC 7638); a proof with any other key is `invalid_proof`.
+- **Lifetime:** `expiresIn`, from 60 to 3600 seconds (default 600). Claims are strings, and names starting `__oid4vci.` are refused.
+
+**The tenant's say at issuing time (the issuance hook).** With `issuanceHook.url` in its settings, the issuer asks the tenant before it
+signs a credential of a referenced offer, and tells it after:
+- **The calls:** `POST <url>/authorize` and `POST <url>/issued`, each with `{ reference, credentialConfigurationId, format,
+  holderKeyThumbprint }`. `issued` also carries `credentialDigest`.
+- **Authentication:** `Authorization: Bearer` with a 60-second JWT (`typ hook+jwt`) signed by the tenant's own issuer key, the one at
+  its `/jwks`: `iss` the tenant's identifier, `aud` the URL called, a `jti`, and `body_sha256` of the exact body.
+- **The answer to authorize:** `200 {"allow": true}` issues; `403` or `409` (with an optional `reason`) answers the wallet
+  `credential_request_denied`. Anything else, or no answer within 5 seconds, issues nothing and answers `503 temporarily_unavailable`.
+  A batch is issued whole or not at all.
+- **issued** is retried in the background (after 1, 5 and 30 seconds), since the credential is already in the wallet; the tenant
+  treats it as idempotent per reference and format.
+
 **Persistent stores (`oid4vci-issuer-jdbc`).** Add the module and set `oid4vci.issuer.store.type=jdbc`. The issuer then keeps what it
 holds between requests in PostgreSQL, through the application's `DataSource`, instead of in memory: codes, PAR requests, nonces,
 offers, the claims behind access tokens, and DPoP and attestation replay records. Several instances share it, and it survives a restart.

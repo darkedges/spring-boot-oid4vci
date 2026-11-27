@@ -88,6 +88,17 @@ public class BankSecurity {
             .csrf(c -> c.disable()).authorizeHttpRequests(a -> a.requestMatchers("/credential").authenticated().anyRequest().permitAll())
             .oauth2ResourceServer(o -> o.jwt(j -> {})).build();
     }
+    /**
+     * Where a failed sign-in lands. A staff sign-in that AuthStack refused (error=access_denied at /login/oauth2/code/staff: the
+     * bank-staff-signin flow found the staff member inactive or superseded) shows the home page's staff message; every other failure,
+     * an HR sign-in's included, the generic one.
+     */
+    static String signInFailurePage(String requestUri, org.springframework.security.core.AuthenticationException exception) {
+        boolean staffCallback = requestUri != null && requestUri.endsWith("/login/oauth2/code/staff");
+        boolean denied = exception instanceof org.springframework.security.oauth2.core.OAuth2AuthenticationException oauth
+                && "access_denied".equals(oauth.getError().getErrorCode());
+        return staffCallback && denied ? "/?staff=refused" : "/?signin=failed";
+    }
     /** HR access only ever comes from the HR provider: a staff sign-in through AuthStack never grants it, whatever its token carries. */
     static boolean grantsHr(String registrationId, org.springframework.security.oauth2.core.oidc.user.OidcUser user, String claim) {
         return "hr".equals(registrationId) && hasHrAccess(user, claim);
@@ -103,7 +114,8 @@ public class BankSecurity {
             .logout(l -> l.invalidateHttpSession(true).clearAuthentication(true).deleteCookies("JSESSIONID").logoutSuccessUrl("/"))
             // HR pages send a signed-out browser straight to the HR provider, as they did when it was the only one (with a second, staff,
             // registration Spring would otherwise show its own choice page). A staff sign-in goes to /oauth2/authorization/staff.
-            .oauth2Login(o -> o.loginPage("/oauth2/authorization/hr").failureUrl("/?signin=failed")
+            .oauth2Login(o -> o.loginPage("/oauth2/authorization/hr")
+                .failureHandler((request, response, exception) -> response.sendRedirect(signInFailurePage(request.getRequestURI(), exception)))
                 .successHandler(staffSignIn.successHandler())
                 .userInfoEndpoint(u -> u.oidcUserService(request -> {
                 var user = delegate.loadUser(request);

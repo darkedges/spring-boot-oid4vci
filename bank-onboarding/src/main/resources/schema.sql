@@ -28,6 +28,8 @@ ALTER TABLE bank_hire ADD COLUMN IF NOT EXISTS passport_check_after timestamptz;
 -- The Journey API (Authr): which front end started a presentation, and when its result was taken (once).
 ALTER TABLE bank_presentation ADD COLUMN IF NOT EXISTS channel text NOT NULL DEFAULT 'portal';
 ALTER TABLE bank_presentation ADD COLUMN IF NOT EXISTS consumed_at timestamptz;
+-- Why a verified presentation was refused (staff_inactive, staff_superseded), so whoever waits on it learns at once rather than at expiry.
+ALTER TABLE bank_presentation ADD COLUMN IF NOT EXISTS refused_reason text;
 ALTER TABLE bank_audit ADD COLUMN IF NOT EXISTS channel text;
 -- An opened invitation, as a short-lived opaque reference (only its hash is kept). One live reference per attempt.
 CREATE TABLE IF NOT EXISTS bank_applicant_ref (

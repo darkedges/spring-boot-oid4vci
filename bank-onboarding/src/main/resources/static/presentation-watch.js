@@ -23,6 +23,9 @@ export function watchPresentation(document, window) {
         stopped = true;
         view.textContent = 'Presentation accepted. Continuing…';
         window.location.replace(view.dataset.resultUrl);
+      } else if (result.status === 'refused') {
+        stopped = true;
+        view.textContent = 'Your wallet presented a valid credential, but access was refused. Contact HR if you think this is wrong.';
       } else if (result.status === 'expired') {
         stopped = true;
         view.textContent = 'This presentation request expired. Start a new request.';

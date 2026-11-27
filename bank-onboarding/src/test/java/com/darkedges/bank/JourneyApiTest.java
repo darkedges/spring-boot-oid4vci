@@ -152,6 +152,17 @@ class JourneyApiTest {
             assertThat(code(() -> api.consume(id, secret))).isEqualTo("409 staff_inactive");
         }
 
+        @Test void aRefusedStaffPresentationIsReportedAtOnceAndCannotBeConsumed() {
+            hire("invite-8", "REVOKED", Instant.now().plusSeconds(3600));
+            var started = api.startStaffPresentation(Jwt.withTokenValue("t").header("alg", "ES256").claim("client_id", "authr").build());
+            String id = (String) started.get("presentationId"), secret = (String) started.get("completionSecret");
+            assertThat(api.presentation(id, secret)).isEqualTo(Map.of("status", "pending"));
+            // What /vp/response records when the wallet presents a valid credential of an inactive staff member.
+            db.update("update bank_presentation set refused_reason='staff_inactive' where id=?", id);
+            assertThat(api.presentation(id, secret)).isEqualTo(Map.of("status", "refused", "refusedReason", "staff_inactive"));
+            assertThat(code(() -> api.consume(id, secret))).isEqualTo("409 not_complete");
+        }
+
         @Test void anActiveStaffMemberIsNamedOnlyThroughConsume() {
             UUID staff = UUID.fromString(hire("invite-7", "ACTIVE", Instant.now().plusSeconds(3600)));
             var started = api.startStaffPresentation(Jwt.withTokenValue("t").header("alg", "ES256").claim("client_id", "authr").build());

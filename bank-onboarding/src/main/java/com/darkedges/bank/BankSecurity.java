@@ -45,6 +45,33 @@ public class BankSecurity {
      * The AuthStack console's operations on a staff member (DirectoryActionsController). Bearer only, stateless, no CSRF: the controller
      * checks the administrator's AuthStack console token with AuthStack itself.
      */
+    /**
+     * The bank's tenant of the shared credential issuer (SharedIssuer), when bank.credentials.issuer is set. Its issuance hook
+     * (IssuerHookController) is then answered, and staff sign-in also trusts the staff credentials it issued.
+     */
+    @Bean
+    @org.springframework.boot.autoconfigure.condition.ConditionalOnExpression("!'${bank.credentials.issuer:}'.isBlank()")
+    SharedIssuer sharedIssuer(@Value("${bank.credentials.issuer}") String issuer, @Value("${bank.credentials.issue-via:embedded}") String issueVia,
+                              @Value("${bank.credentials.token-url:}") String tokenUrl, @Value("${bank.credentials.client-id:}") String clientId,
+                              @Value("${bank.credentials.client-secret:}") String clientSecret, @Value("${bank.base-url}") String base,
+                              @Value("${bank.credentials.offer-configurations:BankStaffCredential}") List<String> offerConfigurations) {
+        offerConfigurations = offerConfigurations.stream().map(String::trim).filter(c -> !c.isEmpty()).toList();
+        if (offerConfigurations.isEmpty()) offerConfigurations = List.of("BankStaffCredential");
+        boolean shared = "shared".equalsIgnoreCase(issueVia.trim());
+        if (!shared && !"embedded".equalsIgnoreCase(issueVia.trim())) throw new IllegalArgumentException("bank.credentials.issue-via is shared or embedded");
+        if (shared && (tokenUrl.isBlank() || clientId.isBlank() || clientSecret.isBlank())) {
+            throw new IllegalArgumentException("bank.credentials.issue-via=shared needs bank.credentials.token-url, client-id and client-secret");
+        }
+        return new SharedIssuer(new SharedIssuer.Settings(issuer.trim().replaceAll("/+$", ""), tokenUrl.isBlank() ? null : java.net.URI.create(tokenUrl),
+                clientId, clientSecret, base.replaceAll("/+$", "") + "/api/issuer-hook/v1", offerConfigurations, shared),
+                java.net.http.HttpClient.newBuilder().connectTimeout(java.time.Duration.ofSeconds(5)).build(), Clock.systemUTC());
+    }
+    /** The shared issuer's calls to the bank's issuance hook: stateless, no CSRF; IssuerHookController checks each call's signed token. */
+    @Bean @Order(-2) SecurityFilterChain issuerHook(HttpSecurity http) throws Exception {
+        return http.securityMatcher("/api/issuer-hook/**").csrf(c -> c.disable())
+            .sessionManagement(s -> s.sessionCreationPolicy(org.springframework.security.config.http.SessionCreationPolicy.STATELESS))
+            .authorizeHttpRequests(a -> a.anyRequest().permitAll()).build();
+    }
     @Bean @Order(-1) SecurityFilterChain directoryActions(HttpSecurity http) throws Exception {
         return http.securityMatcher("/api/directory/**").csrf(c -> c.disable())
             .sessionManagement(s -> s.sessionCreationPolicy(org.springframework.security.config.http.SessionCreationPolicy.STATELESS))

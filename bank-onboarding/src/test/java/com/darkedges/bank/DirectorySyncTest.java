@@ -63,7 +63,7 @@ class DirectorySyncTest {
             String url = System.getenv("BANK_TEST_DATABASE_URL");
             Assumptions.assumeTrue(url != null && !url.isBlank(), "BANK_TEST_DATABASE_URL not set");
             db = new JdbcTemplate(new DriverManagerDataSource(url));
-            db.execute("drop table if exists bank_directory_outbox, bank_applicant_ref, bank_presentation, bank_audit, bank_hire cascade");
+            db.execute("drop table if exists bank_issued_credential, bank_directory_outbox, bank_applicant_ref, bank_presentation, bank_audit, bank_hire cascade");
             for (String statement : new String(getClass().getResourceAsStream("/schema.sql").readAllBytes()).split(";")) if (!statement.isBlank()) db.execute(statement);
             var key = new ECKeyGenerator(Curve.P_256).generate();
             var file = dir.resolve("passport.jwk"); Files.writeString(file, key.toPublicJWK().toJSONString());

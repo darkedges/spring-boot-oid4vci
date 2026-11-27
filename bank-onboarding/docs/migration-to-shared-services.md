@@ -248,6 +248,15 @@ Move **staff sign-in first**, since it's simpler (no freshness or evidence rules
 
 Each step is its own PR and can ship without the next.
 
+**Progress:**
+- Steps 1 to 3 are done: oid4vp #12, spring-boot-oid4vci #18, pingone-authstack #150. The Risk E Bank tenant is enabled at
+  `issuer.bank.darkedges.com`.
+- Step 4 is built:
+  - `SharedIssuer` and `IssuerHookController`, behind `BANK_ISSUE_VIA`;
+  - the issued credentials recorded in `bank_issued_credential`, once per format;
+  - the issuer's `issued` call now carries the credential itself.
+- Step 5 is tracked as oid4vci-wallet#3. Until then the bank offers `BankStaffCredential` only.
+
 ## Decisions
 
 | # | Question | Decision | Why |

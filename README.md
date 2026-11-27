@@ -301,7 +301,7 @@ DELETE /tenant-api/v1/offers/{reference}
 **The tenant's say at issuing time (the issuance hook).** With `issuanceHook.url` in its settings, the issuer asks the tenant before it
 signs a credential of a referenced offer, and tells it after:
 - **The calls:** `POST <url>/authorize` and `POST <url>/issued`, each with `{ reference, credentialConfigurationId, format,
-  holderKeyThumbprint }`. `issued` also carries `credentialDigest`.
+  holderKeyThumbprint }`. `issued` also carries the `credential` itself (the tenant's own) and its `credentialDigest`.
 - **Authentication:** `Authorization: Bearer` with a 60-second JWT (`typ hook+jwt`) signed by the tenant's own issuer key, the one at
   its `/jwks`: `iss` the tenant's identifier, `aud` the URL called, a `jti`, and `body_sha256` of the exact body.
 - **The answer to authorize:** `200 {"allow": true}` issues; `403` or `409` (with an optional `reason`) answers the wallet

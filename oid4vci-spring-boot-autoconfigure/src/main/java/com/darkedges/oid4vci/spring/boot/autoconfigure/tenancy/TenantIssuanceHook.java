@@ -45,7 +45,7 @@ import java.util.concurrent.TimeUnit;
  *       {@code body_sha256} binding the exact body. The tenant verifies it against the tenant's published keys.</li>
  *   <li><b>authorize</b>: 200 {@code {"allow": true}} issues; 403 or 409 (with an optional {@code reason}) refuses with
  *       {@code credential_request_denied}; anything else, or no answer in {@link #TIMEOUT}, issues nothing (503 to the wallet).</li>
- *   <li><b>issued</b>: retried in the background ({@link #RETRIES}), as the credential is already in the wallet's response; the tenant
+ *   <li><b>issued</b> carries the {@code credential} (the tenant's own) and its {@code credentialDigest}; retried in the background ({@link #RETRIES}), as the credential is already in the wallet's response; the tenant
  *       treats it as idempotent per reference and format.</li>
  * </ul>
  */
@@ -97,7 +97,8 @@ public final class TenantIssuanceHook implements IssuanceHook {
         Optional<URI> hook = hookOf(context);
         if (hook.isEmpty()) return;
         URI url = hook.get().resolve(hook.get().getPath().endsWith("/") ? "issued" : hook.get().getPath() + "/issued");
-        String body = body(attempt, sha256(credential.getBytes(StandardCharsets.US_ASCII)));
+        // The credential itself goes to the tenant: it is the tenant's own, and a tenant (the bank) checks later presentations against it.
+        String body = body(attempt, credential);
         tell(context, url, body, attempt, 0);
     }
 
@@ -152,13 +153,16 @@ public final class TenantIssuanceHook implements IssuanceHook {
         return jwt.serialize();
     }
 
-    private static String body(Attempt attempt, String credentialDigest) {
+    private static String body(Attempt attempt, String credential) {
         ObjectNode body = MAPPER.createObjectNode()
                 .put("reference", attempt.reference())
                 .put("credentialConfigurationId", attempt.credentialConfigurationId())
                 .put("format", attempt.format())
                 .put("holderKeyThumbprint", attempt.holderKeyThumbprint());
-        if (credentialDigest != null) body.put("credentialDigest", credentialDigest);
+        if (credential != null) {
+            body.put("credential", credential);
+            body.put("credentialDigest", sha256(credential.getBytes(StandardCharsets.US_ASCII)));
+        }
         return body.toString();
     }
 

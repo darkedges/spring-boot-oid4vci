@@ -53,6 +53,10 @@ public class BankController {
     private final PreAuthorizedCodeStore codes;
     private final String base, name;
     private final PassportTrust passports;
+    /** The bank's tenant of the shared credential issuer, when configured (bank.credentials.issuer). */
+    private SharedIssuer shared;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    void setSharedIssuer(SharedIssuer shared) { this.shared = shared; }
     private final ECKey bankKey;
     @org.springframework.beans.factory.annotation.Autowired
     public BankController(JdbcTemplate db, PreAuthorizedCodeStore codes, ECKey bankKey,
@@ -157,6 +161,8 @@ public class BankController {
             if (channel == null) db.update("insert into bank_audit(hire_id,action,actor,reason) values (?,'APPROVAL_REVOKED',?,?)", id, actor, reason.trim());
             else db.update("insert into bank_audit(hire_id,action,actor,reason,channel) values (?,'APPROVAL_REVOKED',?,?,?)", id, actor, reason.trim(), channel);
             directoryChanged(id);
+            // A live staff offer from the shared issuer is withdrawn too (its hook would refuse it anyway).
+            if (shared != null) shared.withdraw(String.valueOf(id));
             return;
         }
         String completedState = switch (decision) {
@@ -238,7 +244,9 @@ public class BankController {
     }
     String client(String id) { return "redirect_uri:"+base+"/vp/response/"+id; }
     /** The types asked for: the bank's staff credential, or a passport from any trusted passport issuer. */
-    List<String> vcts(String type) { return type.equals("staff")?List.of(base+"/vct/BankStaffCredential"):passports.vcts(); }
+    List<String> vcts(String type) { return type.equals("staff")?staffIssuers().stream().map(i->i+"/vct/BankStaffCredential").toList():passports.vcts(); }
+    /** Who may have issued a staff credential: the bank itself (embedded), and its tenant of the shared issuer when there is one. */
+    List<String> staffIssuers() { return shared==null?List.of(base):List.of(base,shared.issuer()); }
     Map<String,Object> transaction(String id) { var rows=db.queryForList("select * from bank_presentation where id=? and expires_at>now()",id); require(rows.size()==1,"Presentation expired"); return rows.getFirst(); }
     /**
      * A verified presentation the bank turns down (an inactive or superseded staff member). Answered 400 like any other failure, but
@@ -261,20 +269,26 @@ public class BankController {
         var entry=JSON.readTree(vp).path(type); require(entry.isArray() && entry.size()==1 && entry.get(0).isTextual(),"Expected one credential");
         var query=CredentialQuery.builder(type,CredentialFormat.DC_SD_JWT).meta(new SdJwtVcMeta(vcts(type))).build();
         IssuerKeyResolver resolver=(issuer,kid,chain)-> {
-            if(type.equals("staff")) return issuer.equals(base)?Optional.of(JSON.valueToTree(bankKey.toJSONObject())):Optional.empty();
+            if(type.equals("staff")) {
+                if(issuer.equals(base)) return Optional.of(JSON.valueToTree(bankKey.toJSONObject()));
+                // The shared issuer's tenant key, as it publishes it (its certificate chains to the tenant CA).
+                if(shared!=null && issuer.equals(shared.issuer()) && kid.isPresent()) return shared.key(kid.get()).map(k->JSON.valueToTree(k.toPublicJWK().toJSONObject()));
+                return Optional.empty();
+            }
             return passports.key(issuer).map(k->JSON.valueToTree(k.toPublicJWK().toJSONObject()));
         };
         var verified=new SdJwtVerifier().verify(new PresentationEntry.StringPresentation(entry.get(0).asText()),new PresentationVerificationParams(query,(String)tx.get("nonce"),client(id),client(id),base+"/vp/response/"+id,Optional.empty(),resolver,Clock.systemUTC()));
         var c=verified.verifiedClaims(); String vct=c.path("vct").asText(), iss=c.path("iss").asText();
         // A passport's type must be its own issuer's: one trusted issuer can't vouch for another's type.
-        require(type.equals("staff")?vcts(type).contains(vct)&&base.equals(iss):passports.accepts(iss,vct),"Wrong credential type"); require(c.has("exp") && c.path("exp").asLong()>Instant.now().getEpochSecond(),"Expired credential");
+        require(type.equals("staff")?staffIssuers().contains(iss)&&vct.equals(iss+"/vct/BankStaffCredential"):passports.accepts(iss,vct),"Wrong credential type"); require(c.has("exp") && c.path("exp").asLong()>Instant.now().getEpochSecond(),"Expired credential");
         UUID staff=null;
         if(type.equals("passport")) {
             UUID hire=(UUID)tx.get("hire_id"); require(freshPassport(c,passportCheckAfter(hire)),"A fresh Passport check is required. Complete Identity Proofing again."); require(PassportEvidencePolicy.accepts(c),"Passport credential lacks acceptable proofing evidence or is expired"); require(!c.path("family_name").asText().isBlank() && !c.path("assurance_level").asText().isBlank(),"Missing identity or assurance");
             LocalDate birth=LocalDate.parse(c.path("birth_date").asText());
             require(db.update("update bank_hire set verified_given=?,verified_family=?,verified_birth=?,holder_jwk=?,status='REVIEW' where id=? and status='INVITED'",c.path("given_name").asText(),c.path("family_name").asText(),birth,verified.holderKeyConfirmed().orElseThrow().toString(),hire)==1,"Hire is not awaiting identity"); audit(hire,"IDENTITY_PRESENTED","applicant"); directoryChanged(hire);
         } else {
-            require(base.equals(c.path("bank_id").asText()),"Wrong bank"); staff=UUID.fromString(c.path("staff_id").asText());
+            // bank_id is the issuer the credential names: the bank's own address, or its tenant of the shared issuer.
+            require(iss.equals(c.path("bank_id").asText()),"Wrong bank"); staff=UUID.fromString(c.path("staff_id").asText());
             if(!isActive(staff)) throw refuse(id,"staff_inactive","Staff access is inactive");
             var current=db.queryForMap("select issued_credential from bank_hire where id=?",staff);
             if(!(current.get("issued_credential") instanceof String stored && stored.split("~",2)[0].equals(entry.get(0).asText().split("~",2)[0]))) throw refuse(id,"staff_superseded","Staff credential has been superseded");
@@ -307,6 +321,14 @@ public class BankController {
     }
     /** A one-time (10 minute) pre-authorized offer of the staff credential, bound to the holder key the applicant's Passport presentation proved. */
     String staffOffer(Map<String,Object> h) throws Exception {
+        if (shared!=null && shared.issuesOffers()) {
+            // From the shared issuer, as the bank's tenant: bound to the key the passport proved, and the bank's hook checks the hire again
+            // at issuing time. bank_id names that issuer, which the credential will.
+            JsonNode holder=JSON.readTree((String)h.get("holder_jwk"));
+            Map<String,String> claims=Map.of("staff_id",h.get("id").toString(),"bank_id",shared.issuer(),"given_name",(String)h.get("verified_given"),
+                    "family_name",(String)h.get("verified_family"),"department",(String)h.get("department"));
+            return shared.offer(h.get("id").toString(),claims,holder,ECKey.parse((String)h.get("holder_jwk")).computeThumbprint().toString());
+        }
         String code=token(); codes.save(code,new PreAuthorizedCodeSession(List.of("BankStaffCredential"),Optional.empty(),Map.of("staff_id",h.get("id").toString(),"bank_id",base,"given_name",(String)h.get("verified_given"),"family_name",(String)h.get("verified_family"),"department",(String)h.get("department")),Instant.now().plusSeconds(600)));
         return JSON.writeValueAsString(Map.of("credential_issuer",base,"credential_configuration_ids",List.of("BankStaffCredential"),"grants",Map.of("urn:ietf:params:oauth:grant-type:pre-authorized_code",Map.of("pre-authorized_code",code)),"bank_holder_jwk",JSON.readTree((String)h.get("holder_jwk"))));
     }

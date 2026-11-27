@@ -186,8 +186,9 @@ class TenantOffersAndIssuanceHookTest {
             assertThat(body.path("holderKeyThumbprint").asText()).isEqualTo(holder.computeThumbprint().toString());
         }
 
-        // The credential: the bank's claims, and none of the offer's constraints.
+        // The credential: the bank's claims, and none of the offer's constraints. The bank is told the very credential it was issued.
         String sdJwt = MAPPER.readTree(issued.body()).path("credentials").get(0).path("credential").asText();
+        assertThat(MAPPER.readTree(hookCalls.get(1).getValue()[1]).path("credential").asText()).isEqualTo(sdJwt);
         String all = sdJwt + new String(java.util.Base64.getUrlDecoder().decode(sdJwt.substring(0, sdJwt.indexOf('~')).split("\\.")[1]), StandardCharsets.UTF_8)
                 + java.util.Arrays.stream(sdJwt.split("~")).skip(1).filter(s -> !s.isEmpty())
                         .map(d -> new String(java.util.Base64.getUrlDecoder().decode(d), StandardCharsets.UTF_8)).collect(Collectors.joining());

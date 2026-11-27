@@ -240,9 +240,23 @@ public class BankController {
     /** The types asked for: the bank's staff credential, or a passport from any trusted passport issuer. */
     List<String> vcts(String type) { return type.equals("staff")?List.of(base+"/vct/BankStaffCredential"):passports.vcts(); }
     Map<String,Object> transaction(String id) { var rows=db.queryForList("select * from bank_presentation where id=? and expires_at>now()",id); require(rows.size()==1,"Presentation expired"); return rows.getFirst(); }
-    @PostMapping(value="/vp/response/{id}",produces="application/json") @ResponseBody @Transactional String response(@PathVariable String id,@RequestParam String state,@RequestParam("vp_token") String vp) throws Exception {
+    /**
+     * A verified presentation the bank turns down (an inactive or superseded staff member). Answered 400 like any other failure, but
+     * recorded on the presentation first, and kept: the transaction commits on this exception, so the browser or Authr journey waiting
+     * on it reports "refused" at once instead of waiting for it to expire. Only a credential that verified can refuse a presentation;
+     * anything else (garbage, a wrong nonce, an untrusted key) leaves it pending, so a stranger with the QR code can't end a sign-in.
+     */
+    static final class PresentationRefused extends ResponseStatusException {
+        final String reason;
+        PresentationRefused(String reason, String message) { super(HttpStatus.BAD_REQUEST, message); this.reason = reason; }
+    }
+    PresentationRefused refuse(String id, String reason, String message) {
+        db.update("update bank_presentation set refused_reason=? where id=? and refused_reason is null", reason, id);
+        return new PresentationRefused(reason, message);
+    }
+    @PostMapping(value="/vp/response/{id}",produces="application/json") @ResponseBody @Transactional(noRollbackFor=PresentationRefused.class) String response(@PathVariable String id,@RequestParam String state,@RequestParam("vp_token") String vp) throws Exception {
         require(id.equals(state),"Wrong state");
-        var tx=db.queryForMap("select * from bank_presentation where id=? and expires_at>now() for update",id); require(!Boolean.TRUE.equals(tx.get("complete")),"Presentation already used");
+        var tx=db.queryForMap("select * from bank_presentation where id=? and expires_at>now() for update",id); require(!Boolean.TRUE.equals(tx.get("complete")),"Presentation already used"); require(tx.get("refused_reason")==null,"Presentation was refused");
         String type=tx.get("hire_id")==null?"staff":"passport";
         var entry=JSON.readTree(vp).path(type); require(entry.isArray() && entry.size()==1 && entry.get(0).isTextual(),"Expected one credential");
         var query=CredentialQuery.builder(type,CredentialFormat.DC_SD_JWT).meta(new SdJwtVcMeta(vcts(type))).build();
@@ -260,9 +274,10 @@ public class BankController {
             LocalDate birth=LocalDate.parse(c.path("birth_date").asText());
             require(db.update("update bank_hire set verified_given=?,verified_family=?,verified_birth=?,holder_jwk=?,status='REVIEW' where id=? and status='INVITED'",c.path("given_name").asText(),c.path("family_name").asText(),birth,verified.holderKeyConfirmed().orElseThrow().toString(),hire)==1,"Hire is not awaiting identity"); audit(hire,"IDENTITY_PRESENTED","applicant"); directoryChanged(hire);
         } else {
-            require(base.equals(c.path("bank_id").asText()),"Wrong bank"); staff=UUID.fromString(c.path("staff_id").asText()); active(staff);
+            require(base.equals(c.path("bank_id").asText()),"Wrong bank"); staff=UUID.fromString(c.path("staff_id").asText());
+            if(!isActive(staff)) throw refuse(id,"staff_inactive","Staff access is inactive");
             var current=db.queryForMap("select issued_credential from bank_hire where id=?",staff);
-            require(current.get("issued_credential") instanceof String stored && stored.split("~",2)[0].equals(entry.get(0).asText().split("~",2)[0]),"Staff credential has been superseded");
+            if(!(current.get("issued_credential") instanceof String stored && stored.split("~",2)[0].equals(entry.get(0).asText().split("~",2)[0]))) throw refuse(id,"staff_superseded","Staff credential has been superseded");
         }
         db.update("update bank_presentation set complete=true,staff_id=? where id=?",staff,id);
         return "{}";
@@ -271,11 +286,11 @@ public class BankController {
     String presentationStatus(@PathVariable String id, HttpSession session) {
         Object secret=session.getAttribute("vp:"+id);
         if(secret==null) throw new ResponseStatusException(HttpStatus.FORBIDDEN,"Open the request in its original browser");
-        var rows=db.queryForList("select complete,expires_at,browser_secret_hash from bank_presentation where id=?",id);
+        var rows=db.queryForList("select complete,refused_reason,expires_at,browser_secret_hash from bank_presentation where id=?",id);
         if(rows.size()!=1 || !hash(secret.toString()).equals(rows.getFirst().get("browser_secret_hash")))
             throw new ResponseStatusException(HttpStatus.FORBIDDEN,"Open the request in its original browser");
         var tx=rows.getFirst();
-        String status=!((java.sql.Timestamp)tx.get("expires_at")).toInstant().isAfter(Instant.now()) ? "expired" : Boolean.TRUE.equals(tx.get("complete")) ? "complete" : "pending";
+        String status=presentationStatus(tx, ((java.sql.Timestamp)tx.get("expires_at")).toInstant().isAfter(Instant.now()));
         return "{\"status\":\""+status+"\"}";
     }
     @GetMapping("/vp/result/{id}") String result(@PathVariable String id,HttpSession session,jakarta.servlet.http.HttpServletRequest servletRequest) {
@@ -300,6 +315,11 @@ public class BankController {
     org.springframework.http.ResponseEntity<String> presentationRejected(Exception error) {
         return org.springframework.http.ResponseEntity.badRequest().contentType(org.springframework.http.MediaType.APPLICATION_JSON).body("{\"error\":\"invalid_presentation\"}");
     }
+    /** One status for a presentation, the same for the portal (/vp/status) and the Journey API: expired, complete, refused or pending. */
+    static String presentationStatus(Map<String,Object> tx, boolean live) {
+        return !live ? "expired" : Boolean.TRUE.equals(tx.get("complete")) ? "complete" : tx.get("refused_reason")!=null ? "refused" : "pending";
+    }
+    boolean isActive(UUID id) { return db.queryForObject("select count(*) from bank_hire h where h.id=? and h.status='ACTIVE' and not exists (select 1 from bank_hire newer where newer.previous_hire_id=h.id)",Integer.class,id)==1; }
     void active(UUID id) { require(db.queryForObject("select count(*) from bank_hire h where h.id=? and h.status='ACTIVE' and not exists (select 1 from bank_hire newer where newer.previous_hire_id=h.id)",Integer.class,id)==1,"Staff access is inactive"); }
     @GetMapping({"/staff", "/staff/"}) String staff(HttpSession session,Model m) { require(session.getAttribute("staff")!=null,"Sign in with your staff credential"); UUID id=UUID.fromString(session.getAttribute("staff").toString()); active(id); m.addAttribute("hire",db.queryForMap("select * from bank_hire where id=?",id)); return "staff"; }
     void audit(UUID id,String action,String actor) { db.update("insert into bank_audit(hire_id,action,actor) values (?,?,?)",id,action,actor); }

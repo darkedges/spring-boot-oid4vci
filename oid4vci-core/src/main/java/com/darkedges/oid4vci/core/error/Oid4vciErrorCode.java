@@ -30,7 +30,11 @@ public enum Oid4vciErrorCode {
     USE_ATTESTATION_CHALLENGE("use_attestation_challenge"),
     UNSUPPORTED_CREDENTIAL_TYPE("unsupported_credential_type"),
     UNSUPPORTED_CREDENTIAL_FORMAT("unsupported_credential_format"),
-    CREDENTIAL_REQUEST_DENIED("credential_request_denied");
+    CREDENTIAL_REQUEST_DENIED("credential_request_denied"),
+    /** OID4VCI 1.0 Section 11.3 — the Notification Endpoint doesn't know this {@code notification_id} for this caller. */
+    INVALID_NOTIFICATION_ID("invalid_notification_id"),
+    /** OID4VCI 1.0 Section 11.3 — the Notification Request is malformed. */
+    INVALID_NOTIFICATION_REQUEST("invalid_notification_request");
 
     private final String value;
 

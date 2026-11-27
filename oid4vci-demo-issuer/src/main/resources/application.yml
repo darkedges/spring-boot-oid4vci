@@ -14,6 +14,8 @@ server:
 
 oid4vci:
   issuer:
+    # The Notification Endpoint: wallets say when a credential is deleted (SecurityConfig protects it, with DPoP).
+    notifications-enabled: true
     # Two configurations chosen to match oid4vp's existing demo data (given_name/family_name; doctype
     # org.iso.18013.5.1.mDL), for interop with the sibling oid4vp project's demo Verifier/Wallet -- see
     # the root README.

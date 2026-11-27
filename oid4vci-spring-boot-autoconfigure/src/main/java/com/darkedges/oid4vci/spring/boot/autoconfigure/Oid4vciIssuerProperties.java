@@ -38,6 +38,18 @@ public class Oid4vciIssuerProperties {
 
     private Duration accessTokenTtl = Duration.ofMinutes(5);
 
+    /**
+     * Whether wallets may notify what became of a credential. Off by default: turning it on advertises the endpoint, so the
+     * application must put it behind its resource server, with DPoP (see {@code IssuerDpopAuthenticationConverter}).
+     */
+    private boolean notificationsEnabled;
+
+    /** The Notification Endpoint's path. */
+    private String notificationEndpointPath = "/notification";
+
+    /** How long a wallet may notify what became of a credential: the life of its notification token and of what is kept for it. */
+    private Duration notificationTokenTtl = Duration.ofDays(5 * 365);
+
     private Duration nonceTtl = Duration.ofMinutes(5);
 
     private Duration proofClockSkew = Duration.ofMinutes(5);
@@ -105,6 +117,30 @@ public class Oid4vciIssuerProperties {
 
     public void setBatchCredentialIssuanceMaxSize(Integer batchCredentialIssuanceMaxSize) {
         this.batchCredentialIssuanceMaxSize = batchCredentialIssuanceMaxSize;
+    }
+
+    public boolean isNotificationsEnabled() {
+        return notificationsEnabled;
+    }
+
+    public void setNotificationsEnabled(boolean notificationsEnabled) {
+        this.notificationsEnabled = notificationsEnabled;
+    }
+
+    public String getNotificationEndpointPath() {
+        return notificationEndpointPath;
+    }
+
+    public void setNotificationEndpointPath(String notificationEndpointPath) {
+        this.notificationEndpointPath = notificationEndpointPath;
+    }
+
+    public Duration getNotificationTokenTtl() {
+        return notificationTokenTtl;
+    }
+
+    public void setNotificationTokenTtl(Duration notificationTokenTtl) {
+        this.notificationTokenTtl = notificationTokenTtl;
     }
 
     public Duration getAccessTokenTtl() {

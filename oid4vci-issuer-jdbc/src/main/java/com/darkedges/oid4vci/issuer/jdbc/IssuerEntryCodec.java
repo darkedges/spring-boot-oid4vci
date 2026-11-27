@@ -122,6 +122,50 @@ final class IssuerEntryCodec {
         return Map.copyOf(claims);
     }
 
+    // ---- notifications
+
+    static ObjectNode issuance(com.darkedges.oid4vci.issuer.IssuanceNotificationStore.Issuance issuance) {
+        ObjectNode node = MAPPER.createObjectNode()
+                .put("subject", issuance.subject())
+                .put("credentialConfigurationId", issuance.credentialConfigurationId())
+                .put("issuedAt", issuance.issuedAt().toString())
+                .put("expiresAt", issuance.expiresAt().toString());
+        issuance.reference().ifPresent(r -> node.put("reference", r));
+        ArrayNode received = node.putArray("received");
+        issuance.received().forEach(received::add);
+        return node;
+    }
+
+    static com.darkedges.oid4vci.issuer.IssuanceNotificationStore.Issuance issuance(JsonNode node) {
+        java.util.Set<String> received = new java.util.HashSet<>();
+        node.path("received").forEach(e -> received.add(e.asText()));
+        return new com.darkedges.oid4vci.issuer.IssuanceNotificationStore.Issuance(node.path("subject").asText(),
+                node.path("credentialConfigurationId").asText(), optionalText(node, "reference"),
+                Instant.parse(node.path("issuedAt").asText()), Instant.parse(node.path("expiresAt").asText()), received);
+    }
+
+    static ObjectNode events(List<com.darkedges.oid4vci.issuer.IssuanceNotificationStore.Event> events) {
+        ObjectNode node = MAPPER.createObjectNode();
+        ArrayNode list = node.putArray("events");
+        events.forEach(event -> {
+            ObjectNode entry = list.addObject()
+                    .put("notificationId", event.notificationId())
+                    .put("credentialConfigurationId", event.credentialConfigurationId())
+                    .put("event", event.event())
+                    .put("receivedAt", event.receivedAt().toString());
+            event.description().ifPresent(d -> entry.put("description", d));
+        });
+        return node;
+    }
+
+    static List<com.darkedges.oid4vci.issuer.IssuanceNotificationStore.Event> events(JsonNode node) {
+        List<com.darkedges.oid4vci.issuer.IssuanceNotificationStore.Event> events = new ArrayList<>();
+        node.path("events").forEach(e -> events.add(new com.darkedges.oid4vci.issuer.IssuanceNotificationStore.Event(
+                e.path("notificationId").asText(), e.path("credentialConfigurationId").asText(), e.path("event").asText(),
+                optionalText(e, "description"), Instant.parse(e.path("receivedAt").asText()))));
+        return events;
+    }
+
     static JsonNode offer(CredentialOffer offer) {
         return CredentialOfferWriter.write(offer);
     }

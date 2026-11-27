@@ -183,6 +183,30 @@ public class Oid4vciIssuerAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
+    public com.darkedges.oid4vci.issuer.IssuanceNotificationStore issuanceNotificationStore() {
+        return new com.darkedges.oid4vci.issuer.InMemoryIssuanceNotificationStore();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnBean(IssuerKeys.class)
+    @org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name = "oid4vci.issuer.notifications-enabled", havingValue = "true")
+    public com.darkedges.oid4vci.issuer.IssuanceNotifications issuanceNotifications(
+            com.darkedges.oid4vci.issuer.IssuanceNotificationStore store, IssuerKeys keys, Oid4vciIssuerProperties properties) {
+        return new com.darkedges.oid4vci.issuer.IssuanceNotifications(store, keys, properties.getNotificationTokenTtl(), Clock.systemUTC());
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnBean(IssuerKeys.class)
+    @org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name = "oid4vci.issuer.notifications-enabled", havingValue = "true")
+    public com.darkedges.oid4vci.issuer.web.NotificationController notificationController(
+            com.darkedges.oid4vci.issuer.IssuanceNotifications notifications, IssuerContextResolver issuers) {
+        return new com.darkedges.oid4vci.issuer.web.NotificationController(notifications, issuers);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
     public CredentialOfferStore credentialOfferStore() {
         return new InMemoryCredentialOfferStore();
     }
@@ -313,8 +337,12 @@ public class Oid4vciIssuerAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    public IssuerMetadataController issuerMetadataController(IssuerMetadataTemplates templates, IssuerContextResolver issuers) {
-        return new IssuerMetadataController(templates, issuers);
+    public IssuerMetadataController issuerMetadataController(
+            IssuerMetadataTemplates templates, IssuerContextResolver issuers,
+            ObjectProvider<com.darkedges.oid4vci.issuer.IssuanceNotifications> notifications, Oid4vciIssuerProperties properties) {
+        IssuerMetadataController controller = new IssuerMetadataController(templates, issuers);
+        notifications.ifAvailable(n -> controller.setNotificationEndpointPath(properties.getNotificationEndpointPath()));
+        return controller;
     }
 
     @Bean
@@ -376,9 +404,11 @@ public class Oid4vciIssuerAutoConfiguration {
     public CredentialController credentialController(
             IssuerMetadataTemplates templates, ProofOfPossessionValidator proofValidator, IssuedAccessTokenClaimsStore claimsStore,
             CredentialIssuanceServiceResolver issuanceServices, IssuerContextResolver issuers,
-            ObjectProvider<com.darkedges.oid4vci.issuer.IssuanceHook> issuanceHook) {
+            ObjectProvider<com.darkedges.oid4vci.issuer.IssuanceHook> issuanceHook,
+            ObjectProvider<com.darkedges.oid4vci.issuer.IssuanceNotifications> notifications) {
         CredentialController controller = new CredentialController(templates, proofValidator, claimsStore, issuanceServices, issuers, Clock.systemUTC());
         issuanceHook.ifAvailable(controller::setIssuanceHook);
+        notifications.ifAvailable(controller::setNotifications);
         return controller;
     }
 

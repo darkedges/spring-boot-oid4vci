@@ -310,6 +310,21 @@ signs a credential of a referenced offer, and tells it after:
 - **issued** is retried in the background (after 1, 5 and 30 seconds), since the credential is already in the wallet; the tenant
   treats it as idempotent per reference and format.
 
+**Notifications (a wallet says it deleted a credential).** With `oid4vci.issuer.notifications-enabled=true` (the demo issuer's
+setting) the issuer serves the OID4VCI Notification Endpoint and advertises `notification_endpoint`.
+- **In the Credential Response:** `notification_id`, and this issuer's own `notification_authorization`
+  (`{ access_token, token_type: "DPoP", expires_in }`).
+- **The notification token** is for deleting long after the access token has expired. It is good only for notifying about that
+  response, and only with a DPoP proof signed by the holder key of the response's first credential. It lasts
+  `oid4vci.issuer.notification-token-ttl` (default five years). Removing a retired tenant key ends the tokens it signed.
+- **The request:** `POST /notification { notification_id, event, event_description? }`, `204`. Events: `credential_accepted`,
+  `credential_failure`, `credential_deleted`. Repeating one changes nothing.
+- **For the tenant:** `GET /tenant-api/v1/offers/{reference}/notifications`, for offers with a reference.
+- **A deletion revokes nothing.** It is recorded and shown.
+- **The application must** put the endpoint behind its resource server, with
+  `.dPoP(dpop -> dpop.authenticationConverter(new IssuerDpopAuthenticationConverter(issuers)))`. That converter also makes DPoP
+  work for path-routed tenants, where the plain request URL lacks `/t/<slug>`.
+
 **Persistent stores (`oid4vci-issuer-jdbc`).** Add the module and set `oid4vci.issuer.store.type=jdbc`. The issuer then keeps what it
 holds between requests in PostgreSQL, through the application's `DataSource`, instead of in memory: codes, PAR requests, nonces,
 offers, the claims behind access tokens, and DPoP and attestation replay records. Several instances share it, and it survives a restart.

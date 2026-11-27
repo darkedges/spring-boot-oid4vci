@@ -112,7 +112,11 @@ public class Oid4vciIssuerTenancyAutoConfiguration {
     @ConditionalOnMissingBean
     public TenantOfferController tenantOfferController(com.darkedges.oid4vc.tenancy.tenantapi.TenantCallers callers, IssuerContextResolver issuers,
             com.darkedges.oid4vci.issuer.IssuerMetadataTemplates templates, com.darkedges.oid4vci.issuer.PreAuthorizedCodeService codes,
-            com.darkedges.oid4vci.issuer.PreAuthorizedCodeStore codeStore, com.darkedges.oid4vci.issuer.TenantOfferReferences references) {
-        return new TenantOfferController(callers, issuers, templates, codes, codeStore, references, Clock.systemUTC());
+            com.darkedges.oid4vci.issuer.PreAuthorizedCodeStore codeStore, com.darkedges.oid4vci.issuer.TenantOfferReferences references,
+            ObjectProvider<com.darkedges.oid4vci.issuer.IssuanceNotifications> notifications) {
+        TenantOfferController controller =
+                new TenantOfferController(callers, issuers, templates, codes, codeStore, references, Clock.systemUTC());
+        notifications.ifAvailable(controller::setNotifications);
+        return controller;
     }
 }

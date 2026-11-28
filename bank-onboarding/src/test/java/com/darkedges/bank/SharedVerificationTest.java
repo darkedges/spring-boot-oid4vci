@@ -55,11 +55,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 
 /**
- * Staff sign-in carried out by the shared verifier (bank.credentials.verify-staff-via=shared): the bank asks it, collects what it
- * verified, and applies its own rules. Against a real PostgreSQL database (BANK_TEST_DATABASE_URL, skipped without it) and a stand-in
+ * Staff sign-ins and applicants' passport checks carried out by the shared verifier (bank.credentials.verify-staff-via and
+ * verify-passport-via=shared): the bank asks it, collects what it verified, and applies its own rules. Against a real PostgreSQL database (BANK_TEST_DATABASE_URL, skipped without it) and a stand-in
  * verifier whose result is what the verification library really produces for a presentation of the stored credential.
  */
-class SharedStaffSignInTest {
+class SharedVerificationTest {
 
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final String BASE = "https://bank.example";
@@ -77,6 +77,9 @@ class SharedStaffSignInTest {
     volatile String status = "pending";
     volatile ObjectNode result;
     volatile boolean down;
+    volatile String queryId = "staff";
+    volatile String lastAsk;
+    static final String PASSPORT_ISSUER = "https://passport.example";
     final List<String> calls = new CopyOnWriteArrayList<>();
 
     @BeforeEach
@@ -109,13 +112,13 @@ class SharedStaffSignInTest {
                 code = 503; answer = "{}";
             } else if (path.equals("/tenant-api/v1/transactions")) {
                 code = 201;
-                assertThat(body).contains("\"registrationId\":\"staff-sign-in\"").contains("\"expiresIn\":600");
+                lastAsk = body;
                 answer = "{\"transactionId\":\"vt-1\",\"requestUri\":\"https://v.example/r/1\",\"walletUri\":\"openid4vp://?client_id=x&request_uri=y\"}";
             } else if (path.endsWith("/consume")) {
                 if (status.equals("verified")) {
                     status = "collected";
                     ObjectNode node = JSON.createObjectNode();
-                    node.putObject("credentials").set("staff", result);
+                    node.putObject("credentials").set(queryId, result);
                     answer = node.toString();
                 } else {
                     code = 409; answer = "{\"error\":\"no_result\"}";
@@ -140,7 +143,7 @@ class SharedStaffSignInTest {
                 BASE + "/api/issuer-hook/v1", List.of("BankStaffCredential"), true), http, Clock.systemUTC()));
         bank.setSharedVerifier(new SharedVerifier(origin, http, new WorkerToken(URI.create(origin + "/token"), "bank", "secret", http, Clock.systemUTC())));
         bank.setStaffVerification("shared");
-        bank.checkStaffVerification();
+        bank.checkVerification();
         journey = new JourneyApiController(db, bank, 60);
     }
 
@@ -181,6 +184,172 @@ class SharedStaffSignInTest {
         String bound = JSON.readTree(com.nimbusds.jwt.SignedJWT.parse(credential.split("~")[0]).getPayload().toString()).path("cnf").path("jwk").path("x").asText();
         if (holder.getX().toString().equals(bound)) return holder;
         return holders.get(bound);
+    }
+
+    /** An applicant's passport as the library verifies it: issued by the trusted issuer, with the proofing facts the bank requires. */
+    private ObjectNode passport(Map<String, String> changes) throws Exception {
+        Map<String, String> claims = new java.util.LinkedHashMap<>(Map.of("given_name", "Ada", "family_name", "King", "birth_date", "1990-01-01",
+                "expiry_date", LocalDate.now().plusYears(5).toString(), "assurance_level", "poc-demo", "proofed_at", Instant.now().toString(),
+                "evidence", "liveness=passed;face-match=passed;chip-signature=verified;csca-chain=verified;portrait-from-chip=verified"));
+        claims.putAll(changes);
+        var configuration = new SdJwtVcCredentialConfiguration(PASSPORT_ISSUER + "/vct/PassportCredential", List.of(), Map.of(), List.of(), List.of(), Optional.empty());
+        String issued = new SdJwtVcCredentialIssuanceService(issuerKey, List.of(), Duration.ofDays(1), Clock.systemUTC())
+                .issue(configuration, claims, holder.toPublicJWK(), PASSPORT_ISSUER);
+        String presented = issued + KbJwtBuilder.build(issued, "n", "aud", Instant.now(), JWSAlgorithm.ES256, new ECDSASigner(holder)).serialize();
+        var query = CredentialQuery.builder("passport", CredentialFormat.DC_SD_JWT).meta(new SdJwtVcMeta(List.of(PASSPORT_ISSUER + "/vct/PassportCredential"))).build();
+        var verified = new SdJwtVerifier().verify(new PresentationEntry.StringPresentation(presented), new PresentationVerificationParams(query, "n", "aud", "aud",
+                "https://v.example/response", Optional.empty(), (i, kid, chain) -> Optional.of(JSON.valueToTree(issuerKey.toPublicJWK().toJSONObject())), Clock.systemUTC()));
+        ObjectNode node = JSON.createObjectNode().put("format", "dc+sd-jwt").put("issuer", PASSPORT_ISSUER);
+        node.set("claims", verified.verifiedClaims());
+        node.set("holderKey", verified.holderKeyConfirmed().orElseThrow());
+        return node;
+    }
+
+    /** A passport check started for a newly invited applicant, with the verifier's next result. */
+    private BankController.NewPresentation passportCheck(UUID applicant, ObjectNode answer) {
+        bank.setPassportVerification("shared");
+        queryId = "passport";
+        result = answer;
+        var started = bank.newPresentation(applicant, "authr");
+        status = "verified";
+        return started;
+    }
+
+    private String hireStatus(UUID id) {
+        return db.queryForObject("select status from bank_hire where id=?", String.class, id);
+    }
+
+    private int identityAudits(UUID id) {
+        return db.queryForObject("select count(*) from bank_audit where hire_id=? and action='IDENTITY_PRESENTED'", Integer.class, id);
+    }
+
+    @Test
+    void aPassportCheckAsksTheVerifierAndMovesTheApplicantToReview() throws Exception {
+        UUID applicant = hire("INVITED", null);
+        var started = passportCheck(applicant, passport(Map.of()));
+        assertThat(JSON.readTree(lastAsk).path("registrationId").asText()).isEqualTo("passport");
+        assertThat(JSON.readTree(lastAsk).has("requestParameters")).as("no repeat check was asked for").isFalse();
+        assertThat(row(started.id()).get("verifier_transaction_id")).isEqualTo("vt-1");
+
+        assertThat(journey.presentation(started.id(), started.secret())).containsEntry("status", "complete");
+        var hired = db.queryForMap("select * from bank_hire where id=?", applicant);
+        assertThat(hired.get("status")).isEqualTo("REVIEW");
+        assertThat(hired.get("verified_given")).isEqualTo("Ada");
+        assertThat(hired.get("verified_family")).isEqualTo("King");
+        assertThat(hired.get("verified_birth").toString()).isEqualTo("1990-01-01");
+        assertThat(ECKey.parse((String) hired.get("holder_jwk")).computeThumbprint()).isEqualTo(holder.computeThumbprint());
+        assertThat(identityAudits(applicant)).isEqualTo(1);
+        assertThat(journey.consume(started.id(), started.secret())).containsKey("stage");
+        assertThat(calls.stream().filter(c -> c.endsWith("/consume"))).hasSize(1);
+    }
+
+    @Test
+    void aRepeatCheckPassesOnHowRecentItMustBeAndAnOlderProofingIsNotAccepted() throws Exception {
+        UUID applicant = hire("INVITED", null);
+        Instant cutoff = Instant.now().minusSeconds(60).truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
+        db.update("update bank_hire set passport_check_after=? where id=?", Timestamp.from(cutoff), applicant);
+
+        var stale = passportCheck(applicant, passport(Map.of("proofed_at", cutoff.minusSeconds(1).toString())));
+        assertThat(JSON.readTree(lastAsk).path("requestParameters").path("passport_check_after").asText()).isEqualTo(cutoff.toString());
+        assertThat(journey.presentation(stale.id(), stale.secret())).containsEntry("status", "pending");
+        assertThat(hireStatus(applicant)).isEqualTo("INVITED");
+        assertThat(identityAudits(applicant)).isZero();
+
+        var fresh = passportCheck(applicant, passport(Map.of("proofed_at", Instant.now().toString())));
+        assertThat(journey.presentation(fresh.id(), fresh.secret())).containsEntry("status", "complete");
+        assertThat(hireStatus(applicant)).isEqualTo("REVIEW");
+    }
+
+    @Test
+    void aPassportTheBankDoesNotAcceptChangesNothing() throws Exception {
+        List<ObjectNode> unacceptable = new ArrayList<>();
+        unacceptable.add(passport(Map.of("assurance_level", "self-asserted")));
+        unacceptable.add(passport(Map.of("evidence", "liveness=failed;face-match=passed;chip-signature=verified;csca-chain=verified;portrait-from-chip=verified")));
+        unacceptable.add(passport(Map.of("expiry_date", LocalDate.now().minusDays(1).toString())));
+        unacceptable.add(passport(Map.of("birth_date", "not a date")));
+        unacceptable.add(passport(Map.of("family_name", " ")));
+        ObjectNode stranger = passport(Map.of()).put("issuer", ISSUER); // trusted by the verifier, not for passports
+        ((ObjectNode) stranger.get("claims")).put("iss", ISSUER).put("vct", ISSUER + "/vct/PassportCredential");
+        unacceptable.add(stranger);
+        ObjectNode wrongType = passport(Map.of());
+        ((ObjectNode) wrongType.get("claims")).put("vct", ISSUER + "/vct/BankStaffCredential");
+        unacceptable.add(wrongType);
+        unacceptable.add(result); // a staff credential
+
+        for (ObjectNode answer : unacceptable) {
+            UUID applicant = hire("INVITED", null);
+            var started = passportCheck(applicant, answer);
+            assertThat(settle(started.id())).as(answer.toString()).isFalse();
+            assertThat(hireStatus(applicant)).isEqualTo("INVITED");
+            assertThat(row(started.id()).get("complete")).isEqualTo(false);
+            assertThat(db.queryForObject("select holder_jwk from bank_hire where id=?", String.class, applicant)).isNull();
+        }
+    }
+
+    @Test
+    void aResultIsNotCollectedForAnApplicantWhoCanNoLongerUseIt() throws Exception {
+        UUID cancelled = hire("INVITED", null);
+        var first = passportCheck(cancelled, passport(Map.of()));
+        db.update("update bank_hire set status='CANCELLED' where id=?", cancelled);
+        assertThat(settle(first.id())).isFalse();
+
+        UUID replaced = hire("INVITED", null);
+        var second = passportCheck(replaced, passport(Map.of()));
+        hire("INVITED", replaced);
+        assertThat(settle(second.id())).isFalse();
+
+        assertThat(calls).noneMatch(c -> c.endsWith("/consume"));
+        assertThat(hireStatus(cancelled)).isEqualTo("CANCELLED");
+    }
+
+    @Test
+    void ofTwoChecksForOneApplicantOnlyOneIsApplied() throws Exception {
+        UUID applicant = hire("INVITED", null);
+        var one = passportCheck(applicant, passport(Map.of()));
+        var two = bank.newPresentation(applicant, "authr");
+        assertThat(settle(one.id())).isTrue();
+        status = "verified";
+        assertThat(settle(two.id())).isFalse();
+        assertThat(identityAudits(applicant)).isEqualTo(1);
+        assertThat(calls.stream().filter(c -> c.endsWith("/consume"))).hasSize(1);
+    }
+
+    @Test
+    void racingCallersApplyAPassportOnce() throws Exception {
+        UUID applicant = hire("INVITED", null);
+        var started = passportCheck(applicant, passport(Map.of()));
+        var pool = Executors.newFixedThreadPool(6);
+        List<Future<Boolean>> attempts = new ArrayList<>();
+        for (int i = 0; i < 6; i++) attempts.add(pool.submit(() -> settle(started.id())));
+        int changed = 0;
+        for (Future<Boolean> attempt : attempts) if (attempt.get()) changed++;
+        pool.shutdown();
+        assertThat(changed).isEqualTo(1);
+        assertThat(identityAudits(applicant)).isEqualTo(1);
+        assertThat(calls.stream().filter(c -> c.endsWith("/consume"))).hasSize(1);
+    }
+
+    @Test
+    void thePortalsPassportCheckEndsAtOnboarding() throws Exception {
+        UUID applicant = hire("INVITED", null);
+        bank.setPassportVerification("shared");
+        queryId = "passport";
+        result = passport(Map.of());
+        var session = new MockHttpSession();
+        var started = bank.newPresentation(applicant, "portal");
+        session.setAttribute("vp:" + started.id(), started.secret());
+        status = "verified";
+        assertThat(bank.presentationStatus(started.id(), session)).contains("complete");
+        assertThat(bank.result(started.id(), session, new org.springframework.mock.web.MockHttpServletRequest())).isEqualTo("redirect:/onboarding");
+    }
+
+    @Test
+    void passportVerificationHasItsOwnSwitch() {
+        bank.setStaffVerification("embedded");
+        bank.setPassportVerification("shared");
+        bank.checkVerification();
+        assertThat(start().requestUri()).startsWith(BASE + "/vp/request/");
+        assertThatThrownBy(() -> bank.setPassportVerification("on")).hasMessageContaining("verify-passport-via");
     }
 
     private BankController.NewPresentation start() {
@@ -356,7 +525,7 @@ class SharedStaffSignInTest {
         Path passport = dir.resolve("passport.jwk");
         var unconfigured = new BankController(db, mock(PreAuthorizedCodeStore.class), issuerKey, BASE, "https://passport.example", passport.toString(), "Bank");
         unconfigured.setStaffVerification("shared");
-        assertThatThrownBy(unconfigured::checkStaffVerification).hasMessageContaining("bank.credentials.verifier");
+        assertThatThrownBy(unconfigured::checkVerification).hasMessageContaining("bank.credentials.verifier");
         assertThatThrownBy(() -> unconfigured.setStaffVerification("both")).hasMessageContaining("shared or embedded");
     }
 }

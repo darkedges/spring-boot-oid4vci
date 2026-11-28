@@ -72,6 +72,9 @@ bank:
     # new staff sign-ins are presented to it and the bank collects what it verified (default embedded: the bank verifies them itself).
     verifier: ${BANK_CREDENTIALS_VERIFIER:}
     verify-staff-via: ${BANK_VERIFY_STAFF_VIA:embedded}
+    # The same for applicants' passport checks. The verifier then decides which passport issuers' keys are genuine, from the tenant's
+    # trustedIssuers; the bank still accepts only the issuers it lists (passport-issuer(s) above).
+    verify-passport-via: ${BANK_VERIFY_PASSPORT_VIA:embedded}
   # Where invitation links send applicants: this portal (portal) or the Authr applicant journey (authr, at applicant-entry-url).
   applicant-entry: ${BANK_APPLICANT_ENTRY:portal}
   applicant-entry-url: ${BANK_APPLICANT_ENTRY_URL:}

@@ -262,7 +262,10 @@ Each step is its own PR and can ship without the next.
 - Step 7: the settings are in AuthStack's `terraform/risk-e-bank`; enabling the tenant is done in the console.
 - Step 8, staff sign-in, is built behind `BANK_VERIFY_STAFF_VIA` (`SharedVerifier`). The bank asks the verifier, and collects the
   result when the page or the Journey API asks for the status. As the verifier hands out claims rather than the credential, "superseded"
-  compares the issuer, issue and expiry times and holder key with the stored credential. Passport checks are still verified by the bank.
+  compares the issuer, issue and expiry times and holder key with the stored credential.
+- Step 8, passport checks, is built behind `BANK_VERIFY_PASSPORT_VIA`: the bank passes `passport_check_after` to the verifier and
+  applies the same freshness and evidence rules to what it collects. The verifier's trust (the tenant's `trustedIssuers`) replaces the
+  bank's pinned passport key. A result the bank can't accept, or can't save, is not available again: the applicant starts a new check.
 
 ## Decisions
 

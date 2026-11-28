@@ -11,6 +11,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -37,9 +38,12 @@ public final class SharedVerifier {
         this.token = token;
     }
 
-    public Transaction create(String registrationId, String reference, Duration lifetime) throws Exception {
+    /** @param requestParameters extra parameters for the wallet; the registration has to list each */
+    public Transaction create(String registrationId, String reference, Duration lifetime, Map<String, String> requestParameters)
+            throws Exception {
         ObjectNode body = JSON.createObjectNode().put("registrationId", registrationId).put("reference", reference)
                 .put("expiresIn", lifetime.toSeconds());
+        if (!requestParameters.isEmpty()) requestParameters.forEach(body.putObject("requestParameters")::put);
         HttpResponse<String> response = send(request("").header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(body.toString())));
         if (response.statusCode() != 201) throw refused("start a presentation", response);

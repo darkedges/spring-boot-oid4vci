@@ -13,6 +13,14 @@
 # verifierAuthorizeUrl) is a per-request parameter, not baked-in config.
 services:
   issuer:
+    volumes:
+      - ${DEMO_KEYS_DIR:-./demo-keys}:/demo-keys:ro
     environment:
       - SPRING_PROFILES_ACTIVE=cloudflare
+      # The issuer's own signing keys, required: put issuer.p12 (entry "demo-issuer") and issuer-mdoc.p12 (entry
+      # "demo-issuer-mdoc") in DEMO_KEYS_DIR, outside this repository, and give their passwords in your shell or an untracked .env.
+      - DEMO_SIGNING_KEYSTORE=/demo-keys/issuer.p12
+      - DEMO_SIGNING_KEYSTORE_PASSWORD
+      - DEMO_SIGNING_MDOC_KEYSTORE=/demo-keys/issuer-mdoc.p12
+      - DEMO_SIGNING_MDOC_KEYSTORE_PASSWORD
       - PROOFING_CALLBACK_SECRET=${PROOFING_CALLBACK_SECRET}

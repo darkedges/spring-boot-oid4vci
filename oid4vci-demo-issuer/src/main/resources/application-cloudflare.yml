@@ -6,3 +6,9 @@
 # and RequestBaseUrl) rather than a fixed config value, so the public HTTPS domain (issuer.zkp.au) comes
 # back correctly to any Wallet on the public internet without a profile-specific override. Kept as an
 # active profile in case a cloudflare-specific override is needed again later.
+
+# Deployed, the issuer signs with keys of its own, never the ones published with the source (DemoIssuerKeyConfig). Set
+# DEMO_SIGNING_KEYSTORE, DEMO_SIGNING_MDOC_KEYSTORE and their ..._PASSWORD (docker-compose.cloudflare.yml).
+demo:
+  signing:
+    require-external-key: true

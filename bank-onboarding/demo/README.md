@@ -9,7 +9,7 @@ Mailgun, public issuer, device wallet, or their environment files.
 ## Start
 
 Prerequisites: Docker Desktop, JDK 21+, Maven, Node 22+, npm, and the sibling
-`oid4vp` libraries installed as described by the bank README. Run from this folder:
+`oid4vp`, `oid4vci-wallet` and `identityproofing` repositories (the demo builds them). Run from this folder:
 
 ```powershell
 npm install
@@ -28,19 +28,47 @@ service. The subnet is defined explicitly to avoid Docker address pool exhaustio
 
 | Service | Address |
 |---|---|
-| Bank / HR | http://localhost:43194/hr |
-| Demo Passport issuer | http://localhost:43192 |
+| Bank / HR | https://bank.demo.localhost:43443/hr |
+| Shared credential issuer (Passport, and the bank's tenant) | https://issuer.demo.localhost:43443 |
+| Shared credential verifier | https://verifier.demo.localhost:43443 |
+| AuthStack stand-in | https://authstack.demo.localhost:43443 |
 | Local HR identity provider | http://localhost:43180 |
 | Invitation mailbox | http://localhost:43126 |
 | Browser wallet | http://localhost:43100 |
 | Simulated mobile proofing | http://localhost:43101 |
 
+### How it fits together
+
+The bank runs as a tenant of a shared credential issuer and verifier, as it does live: they issue its staff credential (after asking
+its hook), host its presentation requests and hand it what they verified. `seed.mjs` sets the bank up on both through their admin
+APIs, with the settings the live bank uses. They keep tenants in memory, so `make demo-up` and `make demo-reset` set them up again;
+after restarting a container by hand, run `make demo-reset`.
+
+`authstack.mjs` stands in for AuthStack: it issues the bank worker's token, publishes the keys it is signed with, and says who the
+demo administrator is. It is not an identity provider and is for this demo only.
+
+### HTTPS
+
+The wallet and the shared services require HTTPS, so a proxy serves the `*.demo.localhost` names with a certificate authority of its
+own, made on first start under `runtime/caddy`. The demo's containers and scripts trust it; the recording browser ignores
+certificate errors. **A browser you drive yourself warns about these addresses** unless you trust
+`runtime/caddy/caddy/pki/authorities/local/root.crt` (remove it again afterwards), or accept the warning per address. Chromium and
+Edge resolve `*.localhost` to this machine themselves.
+
+The demo wallet trusts signed requests only from the demo's tenant CA (`runtime/tenant-ca`), which the helper server puts in its
+page.
+
 Fictional HR login: `hr.demo`, password `showcase-local-only`. The applicant is
 Morgan Example, born 1990-04-12, morgan@example.test. Do not use real identities.
-The demo creates separate EC signing keys and a callback secret under ignored
+The demo creates its signing keys, certificate authorities and secrets under ignored
 `runtime/`; these are not production credentials.
 
 ## Record
+
+The narration (`voiceover.json`), RUNBOOK.md and any earlier video still describe the bank issuing and verifying for itself. They are
+to be updated, and the video recorded again, once the bank's own issuer and verifier are removed. `make demo-rehearse` runs the
+current flow. One visible difference: for a refused sign-in the wallet reports success (the verifier received the presentation), and
+the bank's page says access was refused.
 
 ```powershell
 make demo-reset

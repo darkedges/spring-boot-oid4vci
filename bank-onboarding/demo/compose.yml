@@ -14,28 +14,74 @@ services:
   mail:
     image: axllent/mailpit:v1.29.2
     ports: ['127.0.0.1:43126:8025']
+  proxy:
+    image: caddy:2.10-alpine
+    ports: ['127.0.0.1:43443:43443']
+    volumes: ['./Caddyfile:/etc/caddy/Caddyfile:ro', './runtime/caddy:/data']
+    networks:
+      default:
+        aliases: [bank.demo.localhost, issuer.demo.localhost, verifier.demo.localhost, authstack.demo.localhost]
+  authstack:
+    image: node:22-alpine
+    command: [node, /app/authstack.mjs]
+    environment:
+      PUBLIC_URL: https://authstack.demo.localhost:43443
+      ENVIRONMENT_ID: demo-bank
+      WORKER_CLIENT_ID: demo-bank-worker
+      WORKER_CLIENT_SECRET: '${DEMO_WORKER_SECRET:?Run make demo-up}'
+      ADMIN_TOKEN: '${DEMO_ADMIN_TOKEN:?Run make demo-up}'
+    volumes: ['./authstack.mjs:/app/authstack.mjs:ro']
   issuer:
     image: eclipse-temurin:21-jre
-    command: [java, '-Dspring.profiles.active=showcase', '-Dshowcase.signing-key-file=/keys/passport.jwk', '-Dshowcase.simulated=true', -jar, /app/issuer.jar]
-    ports: ['127.0.0.1:43192:8092']
-    environment: {PROOFING_CALLBACK_SECRET: '${SHOWCASE_CALLBACK_SECRET:?Run npm run up}'}
-    volumes: ['../../oid4vci-demo-issuer/target/oid4vci-demo-issuer.jar:/app/issuer.jar:ro', './runtime/keys:/keys:ro']
+    # The shared issuer. Its default tenant is the demo's Passport issuer (simulated assurance); the bank is a tenant of its own.
+    command: [java, '-Dspring.profiles.active=showcase', '-Dshowcase.signing-key-file=/keys/passport.jwk', '-Dshowcase.simulated=true', -jar, /app/issuer.jar, '--spring.profiles.include=tenancy']
+    environment:
+      PROOFING_CALLBACK_SECRET: '${SHOWCASE_CALLBACK_SECRET:?Run make demo-up}'
+      ISSUER_PLATFORM_ORIGINS: https://issuer.demo.localhost:43443
+      OID4VC_TENANCY_AUTHSTACK_API_URL: https://authstack.demo.localhost:43443
+      OID4VC_TENANCY_ADMIN_ENABLED: 'true'
+      OID4VC_TENANCY_KEYS_CA_KEYSTORE: file:/ca/ca.p12
+      OID4VC_TENANCY_KEYS_CA_KEYSTORE_PASSWORD: showcase-local-only
+      OID4VC_TENANCY_KEYS_CA_ALIAS: demo-tenant-ca
+      JAVA_TOOL_OPTIONS: '-Djavax.net.ssl.trustStore=/trust/truststore.p12 -Djavax.net.ssl.trustStorePassword=changeit'
+    volumes: ['./runtime/jars/issuer.jar:/app/issuer.jar:ro', './runtime/keys:/keys:ro', './runtime/tenant-ca:/ca:ro', './runtime/trust:/trust:ro']
+  verifier:
+    image: eclipse-temurin:21-jre
+    command: [java, -jar, /app/verifier.jar, '--spring.profiles.active=tenancy']
+    environment:
+      VERIFIER_PLATFORM_ORIGINS: https://verifier.demo.localhost:43443
+      OID4VC_TENANCY_AUTHSTACK_API_URL: https://authstack.demo.localhost:43443
+      OID4VC_TENANCY_ADMIN_ENABLED: 'true'
+      OID4VC_TENANCY_KEYS_CA_KEYSTORE: file:/ca/ca.p12
+      OID4VC_TENANCY_KEYS_CA_KEYSTORE_PASSWORD: showcase-local-only
+      OID4VC_TENANCY_KEYS_CA_ALIAS: demo-tenant-ca
+      JAVA_TOOL_OPTIONS: '-Djavax.net.ssl.trustStore=/trust/truststore.p12 -Djavax.net.ssl.trustStorePassword=changeit'
+    volumes: ['./runtime/jars/verifier.jar:/app/verifier.jar:ro', './runtime/tenant-ca:/ca:ro', './runtime/trust:/trust:ro']
   bank:
     image: eclipse-temurin:21-jre
     command: [java, '-Dspring.profiles.active=showcase', '-Dshowcase.simulated=true', -jar, /app/bank.jar]
-    ports: ['127.0.0.1:43194:8094']
     depends_on: {db: {condition: service_healthy}}
     environment:
       BANK_NAME: Risk E Bank — Isolated Demonstration
-      BANK_BASE_URL: http://localhost:43194
-      BANK_COOKIE_SECURE: 'false'
+      BANK_BASE_URL: https://bank.demo.localhost:43443
+      BANK_COOKIE_SECURE: 'true'
       BANK_DATABASE_URL: jdbc:postgresql://db:5432/showcase
       BANK_DATABASE_USER: showcase
       BANK_DATABASE_PASSWORD: showcase-local-only
       BANK_PRIVATE_JWK_FILE: /keys/bank.jwk
-      PASSPORT_ISSUER: http://localhost:43192
+      PASSPORT_ISSUER: https://issuer.demo.localhost:43443
       PASSPORT_PUBLIC_JWK_FILE: /keys/passport-public.jwk
       BANK_ISSUER_STORE_TYPE: memory   # the isolated demo keeps the issuer's codes and offers in memory, as before
+      # The bank as a tenant of the shared issuer and verifier, calling them with its (stand-in) AuthStack worker.
+      BANK_CREDENTIALS_ISSUER: https://issuer.demo.localhost:43443/t/bank
+      BANK_CREDENTIALS_VERIFIER: https://verifier.demo.localhost:43443/t/bank
+      BANK_CREDENTIALS_TOKEN_URL: https://authstack.demo.localhost:43443/demo-bank/as/token
+      BANK_CREDENTIALS_CLIENT_ID: demo-bank-worker
+      BANK_CREDENTIALS_CLIENT_SECRET: '${DEMO_WORKER_SECRET:?Run make demo-up}'
+      BANK_ISSUE_VIA: shared
+      BANK_VERIFY_STAFF_VIA: shared
+      BANK_VERIFY_PASSPORT_VIA: shared
+      JAVA_TOOL_OPTIONS: '-Djavax.net.ssl.trustStore=/trust/truststore.p12 -Djavax.net.ssl.trustStorePassword=changeit'
       BANK_OIDC_CLIENT_ID: risk-e-hr
       BANK_OIDC_CLIENT_SECRET: showcase-client-only
       BANK_OIDC_ISSUER: http://localhost:43180/realms/risk-e-demo
@@ -47,7 +93,7 @@ services:
       BANK_MAIL_FROM: hr@risk-e.example.test
       BANK_SMTP_HOST: mail
       BANK_SMTP_PORT: '1025'
-    volumes: ['./runtime/bank-target/bank-onboarding-0.1.0-SNAPSHOT.jar:/app/bank.jar:ro', './runtime/keys:/keys:ro', './bank-showcase.yml:/app/application-showcase.yml:ro']
+    volumes: ['./runtime/jars/bank.jar:/app/bank.jar:ro', './runtime/keys:/keys:ro', './runtime/trust:/trust:ro', './bank-showcase.yml:/app/application-showcase.yml:ro']
     working_dir: /app
 volumes:
   database:

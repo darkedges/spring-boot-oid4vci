@@ -172,6 +172,20 @@ baked-in config. If you rename the `issuer` service in `docker-compose.yml`, upd
 
 ### Hosting behind Cloudflare
 
+**A deployment needs its own signing keys.** The ones in this repository are for local development: anyone can read them. Under the
+`cloudflare` profile the issuer refuses to start without yours. Make them outside the repository, in the directory you give as
+`DEMO_KEYS_DIR`:
+
+```bash
+keytool -genkeypair -alias demo-issuer -keyalg EC -groupname secp256r1 -dname "CN=<your issuer>" -validity 730 \
+  -storetype PKCS12 -keystore "$DEMO_KEYS_DIR/issuer.p12"
+keytool -genkeypair -alias demo-issuer-mdoc -keyalg EC -groupname secp256r1 -dname "CN=<your issuer> mdoc" -validity 730 \
+  -storetype PKCS12 -keystore "$DEMO_KEYS_DIR/issuer-mdoc.p12"
+```
+
+Set `DEMO_SIGNING_KEYSTORE_PASSWORD` and `DEMO_SIGNING_MDOC_KEYSTORE_PASSWORD`. A self-signed leaf is left out of the SD-JWT's
+`x5c`; HAIP-conformant verifiers need one issued by a CA they trust. Anything that pins the previous key must be given the new one.
+
 To expose the demo publicly — e.g. Issuer on `issuer.zkp.au`, Wallet on `vciwallet.zkp.au` (deliberately
 distinct from `oid4vp`'s own `wallet.zkp.au`/`verify.irving.au` pairing — this Wallet does real issuance
 and presentation, not a second self-issuing demo Wallet at the same address) — activate the **`cloudflare`**

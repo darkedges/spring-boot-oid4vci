@@ -163,11 +163,15 @@ POST /tenant-api/v1/transactions                             (on bank.verifier.z
   "reference": "<presentation id in the bank>" }
 → 201 { "transactionId", "requestUri", "walletUri": "openid4vp://?client_id=…&request_uri=…", "expiresAt" }
 
-GET  /tenant-api/v1/transactions/{id}          → { "status": "pending" | "verified" | "rejected" | "expired" }
+GET  /tenant-api/v1/transactions/{id}          → { "status": "pending" | "verified" | "collected" | "expired" }
 POST /tenant-api/v1/transactions/{id}/consume  → 200 { "credentials": { "<query id>": { "format", "issuer", "claims": {…},
-                                                   "holderKey": {…} } } }   (once; 409 afterwards)
+                                                   "holderKey": {…} } } }   (once; 409 when there is nothing to collect)
 ```
 - **Polling plus consume** mirrors the bank's own Journey API, which Authr already polls.
+- **Only a presentation that verifies answers a transaction.** A failing response, or a wallet reporting an error, leaves it
+  `pending`, so someone merely shown the request can't end it. There is no `rejected` status; a refusal is the bank's own decision
+  after consuming (2.2).
+- **The reference** for this API is oid4vp's `docs/multi-tenancy.md`.
 - **A signed callback** to the bank can come later. It isn't needed for the first version.
 
 ### 2.2 What stays in the bank
@@ -176,7 +180,9 @@ The verifier says *the presentation is cryptographically valid and from an issue
 policy to the consumed claims:
 - passport freshness (`proofed_at` against `passport_check_after`) and `PassportEvidencePolicy`;
 - the hire moving to `REVIEW`, and the holder key it stores;
-- for staff sign-in: active, not superseded.
+- for staff sign-in: active, not superseded;
+- **which issuer may issue which type.** The verifier trusts a list of issuers for the whole tenant, so the bank checks each
+  result's `issuer` against its `vct`, as it does today.
 
 The bank's own presentation row keeps the outcome:
 - `complete`, or `refused` with `refused_reason`, as since #16;
@@ -203,27 +209,21 @@ unsigned, with `redirect_uri:` client ids. Before cutover, check:
 
 ### 2.5 The Risk E Bank verifier tenant
 
-```json
-{
-  "registrations": {
-    "passport":      { "dcqlQuery": { "credentials": [ { "id": "passport", "format": "dc+sd-jwt",
-                                                         "meta": { "vct_values": ["https://issuer.zkp.au/vct/PassportCredential"] }, "claims": [ … ] } ] },
-                       "responseMode": "direct_post", "requestParameters": ["passport_check_after"] },
-    "staff-sign-in": { "dcqlQuery": { "credentials": [
-                         { "id": "staff",      "format": "dc+sd-jwt", "meta": { "vct_values": ["https://issuer.bank.darkedges.com/vct/BankStaffCredential"] }, … },
-                         { "id": "staff_mdoc", "format": "mso_mdoc",  "meta": { "doctype_value": "com.darkedges.bank.staff.1" }, … } ],
-                       "credential_sets": [ { "options": [["staff"], ["staff_mdoc"]] } ] },
-                       "responseMode": "direct_post" }
-  },
-  "trustedIssuers": [
-    { "issuer": "https://issuer.zkp.au",      "jwksUri": "https://issuer.zkp.au/jwks" },
-    { "issuer": "https://issuer.bank.darkedges.com", "x5cTrustAnchors": ["<tenant CA>"] }
-  ]
-}
-```
+The settings are the `credential_verifier_settings` output of AuthStack's `terraform/risk-e-bank`, pasted into the console.
 
-During the issuance cutover (1.6), `staff-sign-in` also accepts the old `https://hr.bank.darkedges.com` staff credential type, and
-`trustedIssuers` pins `bank-staff-1`.
+| Registration | Asks for | Extra request parameters |
+|---|---|---|
+| `passport` | query `passport`: `<ZKP issuer>/vct/PassportCredential`, with the claims the bank judges, including `proofed_at` | `passport_check_after` |
+| `staff-sign-in` | query `staff`: `BankStaffCredential` of the shared issuer or of the bank's own, with `staff_id` and `bank_id` | none |
+
+- **SD-JWT VC only, one credential query per registration.** The mobile wallet can't present mdoc, and refuses a query with
+  `credential_sets`.
+- **Trusted issuers:** the ZKP issuer and the bank's tenant by their `jwksUri`, and the bank's old issuer by its pinned public key
+  (until 1.6 step 4). Not the tenant CA as an `x5cTrustAnchors` entry: it certifies every tenant, so it doesn't say which of them signed.
+- **mdoc, later** (oid4vci-wallet#3). The verifier looks up an mdoc's issuer by its **document type**, as an mdoc names no issuer: its
+  trust entry is `{ "issuer": "com.darkedges.bank.staff.1", "x5cTrustAnchors": […] }`, and because a CA anchor there accepts any
+  certificate that CA issued, it needs the verifier to pin the tenant first. Asking for either format then needs `credential_sets`
+  in the wallet.
 
 ### 2.6 Cutover
 
@@ -256,7 +256,10 @@ Each step is its own PR and can ship without the next.
   - `SharedIssuer` and `IssuerHookController`, behind `BANK_ISSUE_VIA`;
   - the issued credentials recorded in `bank_issued_credential`, once per format;
   - the issuer's `issued` call now carries the credential itself.
-- Step 5 is tracked as oid4vci-wallet#3. Until then the bank offers `BankStaffCredential` only.
+- Step 5: the wallet checks and answers signed request objects (oid4vci-wallet#10). mdoc is tracked as oid4vci-wallet#3; until then
+  the bank offers and asks for `BankStaffCredential` only.
+- Step 6 is done (oid4vp #14, #15, #17), without `credential_sets` for mdoc in the wallet (2.5).
+- Step 7: the settings are in AuthStack's `terraform/risk-e-bank`; enabling the tenant is done in the console.
 
 ## Decisions
 

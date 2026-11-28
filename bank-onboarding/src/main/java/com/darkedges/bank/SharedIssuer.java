@@ -74,7 +74,7 @@ public final class SharedIssuer {
         this.http = http;
         this.clock = clock;
         this.keys = keys;
-        this.hookTokens = Map.of("authorize", hookProcessor("authorize"), "issued", hookProcessor("issued"));
+        this.hookTokens = Map.of("authorize", hookProcessor("authorize"), "issued", hookProcessor("issued"), "notified", hookProcessor("notified"));
     }
 
     private DefaultJWTProcessor<SecurityContext> hookProcessor(String path) {
@@ -141,7 +141,7 @@ public final class SharedIssuer {
     }
 
     /**
-     * Checks a call from the shared issuer to the bank's hook at {@code path} ({@code authorize} or {@code issued}): a {@code hook+jwt}
+     * Checks a call from the shared issuer to the bank's hook at {@code path} ({@code authorize}, {@code issued} or {@code notified}): a {@code hook+jwt}
      * (ES256, the tenant's key) issued by the tenant, for this URL, unexpired, binding this exact body, and not seen before.
      */
     public void verifyHookCall(String authorization, String rawBody, String path) {

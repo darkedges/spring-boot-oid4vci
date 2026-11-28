@@ -141,6 +141,23 @@ class IssuerHookTest {
             assertThat(authorize(body("mso_mdoc", thumbprint, null))).isEqualTo(200);
         }
 
+        @Test void aDeletionInTheWalletIsRecordedOnceAndRevokesNothing() throws Exception {
+            String issued = body("dc+sd-jwt", holder.computeThumbprint().toString(), "eyJ.sd-jwt~");
+            hook.issued(hookToken("issued", issued), issued);
+            String deleted = "{\"reference\":\"" + hire + "\",\"credentialConfigurationId\":\"BankStaffCredential\",\"event\":\"credential_deleted\",\"notificationId\":\"n1\"}";
+            String accepted = deleted.replace("credential_deleted", "credential_accepted");
+
+            assertThat(hook.notified(hookToken("notified", accepted), accepted).getStatusCode().value()).isEqualTo(204);
+            assertThat(db.queryForObject("select count(*) from bank_issued_credential where deleted_at is not null", Integer.class)).isZero();
+            assertThat(hook.notified(null, deleted).getStatusCode().value()).isEqualTo(401);
+            assertThat(hook.notified(hookToken("issued", deleted), deleted).getStatusCode().value()).isEqualTo(401);
+            for (int i = 0; i < 2; i++) assertThat(hook.notified(hookToken("notified", deleted), deleted).getStatusCode().value()).isEqualTo(204);
+
+            assertThat(db.queryForObject("select count(*) from bank_issued_credential where deleted_at is not null", Integer.class)).isEqualTo(1);
+            assertThat(db.queryForObject("select count(*) from bank_audit where hire_id=? and action='CREDENTIAL_DELETED'", Integer.class, hire)).isEqualTo(1);
+            assertThat(db.queryForObject("select status from bank_hire where id=?", String.class, hire)).isEqualTo("ACTIVE");
+        }
+
         @Test void refusesAnotherWalletAClosedHireAnUnknownOneAndAnUnsignedCall() throws Exception {
             String thumbprint = holder.computeThumbprint().toString();
             assertThat(authorize(body("dc+sd-jwt", new ECKeyGenerator(Curve.P_256).generate().computeThumbprint().toString(), null))).isEqualTo(409);

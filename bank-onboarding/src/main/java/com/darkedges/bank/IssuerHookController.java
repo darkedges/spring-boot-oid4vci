@@ -29,7 +29,8 @@ import java.util.UUID;
  *   <li>a format is issued once per hire.</li>
  * </ul>
  * {@code issued} records the credential (per format), and then, as before, the hire becomes ACTIVE, the audit says ISSUED, and the
- * AuthStack directory hears of it.
+ * AuthStack directory hears of it. {@code notified} says what a wallet reported: a staff credential deleted from the wallet is
+ * recorded, audited and shown to HR. It revokes nothing; the hire's status is HR's to change.
  */
 @RestController
 @RequestMapping(path = "/api/issuer-hook/v1", produces = MediaType.APPLICATION_JSON_VALUE)
@@ -84,6 +85,28 @@ public class IssuerHookController {
             }
             db.update("insert into bank_audit(hire_id,action,actor) values (?,'ISSUED','issuer')", call.hire());
             directory.ifAvailable(outbox -> outbox.changed(call.hire()));
+        }
+        return ResponseEntity.noContent().build();
+    }
+
+    @PostMapping(path = "/notified", consumes = MediaType.APPLICATION_JSON_VALUE) @Transactional
+    public ResponseEntity<Map<String, Object>> notified(@RequestHeader(name = "Authorization", required = false) String authorization,
+                                                        @RequestBody String rawBody) {
+        Call call;
+        String event;
+        try {
+            call = checked(authorization, rawBody, "notified");
+            event = JSON.readTree(rawBody).path("event").asText();
+        } catch (Refusal r) {
+            return r.answer();
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(Map.of("error", "invalid_request"));
+        }
+        // Only a deletion changes anything here. Idempotent: the issuer retries, and one already recorded matches no row.
+        if ("credential_deleted".equals(event)
+                && db.update("update bank_issued_credential set deleted_at=now() where hire_id=? and credential_configuration_id=? and deleted_at is null",
+                        call.hire(), call.configurationId()) > 0) {
+            db.update("insert into bank_audit(hire_id,action,actor) values (?,'CREDENTIAL_DELETED','wallet')", call.hire());
         }
         return ResponseEntity.noContent().build();
     }

@@ -196,6 +196,31 @@ class TenantOffersAndIssuanceHookTest {
     }
 
     @Test
+    void theBankIsToldOnceWhenTheWalletDeletesTheCredential() throws Exception {
+        String accessToken = accessToken(code(createOffer("hire-told", BANK_TOKEN, Map.of())));
+        String notificationId = MAPPER.readTree(credential(accessToken, holder).body()).path("notification_id").asText();
+        String body = MAPPER.createObjectNode().put("notification_id", notificationId).put("event", "credential_deleted").toString();
+        for (int i = 0; i < 2; i++) {
+            assertThat(send("POST", "/t/bank/notification", "application/json", body, Map.of("Authorization", "Bearer " + accessToken)).statusCode()).isEqualTo(204);
+        }
+        java.util.function.Supplier<List<Map.Entry<String, String[]>>> told =
+                () -> hookCalls.stream().filter(c -> c.getKey().equals("/hook/notified")).toList();
+        for (int i = 0; i < 50 && told.get().isEmpty(); i++) Thread.sleep(100);
+        Thread.sleep(300);
+        assertThat(told.get()).hasSize(1);
+
+        String[] call = told.get().get(0).getValue();
+        SignedJWT jwt = SignedJWT.parse(call[0].substring("Bearer ".length()));
+        ECKey tenantKey = JWKSet.parse(send("GET", "/t/bank/jwks", null, null, Map.of()).body()).getKeys().get(0).toECKey();
+        assertThat(jwt.verify(new ECDSAVerifier(tenantKey))).isTrue();
+        assertThat(jwt.getJWTClaimsSet().getAudience()).containsExactly("http://localhost:" + hookServer.getAddress().getPort() + "/hook/notified");
+        JsonNode notice = MAPPER.readTree(call[1]);
+        assertThat(notice.path("reference").asText()).isEqualTo("hire-told");
+        assertThat(notice.path("event").asText()).isEqualTo("credential_deleted");
+        assertThat(notice.path("notificationId").asText()).isEqualTo(notificationId);
+    }
+
+    @Test
     void aProofWithAnyOtherKeyIsRefused() throws Exception {
         String accessToken = accessToken(code(createOffer("hire-2", BANK_TOKEN, Map.of())));
         HttpResponse<String> wrongKey = credential(accessToken, new ECKeyGenerator(Curve.P_256).generate());

@@ -91,6 +91,9 @@ public class BankController {
         for(var h:rows) h.put("mismatch",h.get("verified_family")!=null && (!normalize((String)h.get("expected_given")).equals(normalize((String)h.get("verified_given"))) || !normalize((String)h.get("expected_family")).equals(normalize((String)h.get("verified_family"))) || !h.get("birth_date").equals(h.get("verified_birth"))));
         // Whether the person's AuthStack user is up to date (only for current attempts, and only once the bank is connected).
         if (directory != null) for (var h : rows) if (h.get("next_hire_id")==null) h.put("directory", directory.state((UUID) h.get("id")));
+        // Staff credentials the holder has deleted from their wallet, as the issuer reported.
+        var deletions = db.queryForList("select hire_id, credential_configuration_id, to_char(deleted_at at time zone 'UTC', 'YYYY-MM-DD HH24:MI') as deleted_at from bank_issued_credential where deleted_at is not null order by deleted_at");
+        for (var h : rows) h.put("walletDeletions", deletions.stream().filter(d -> h.get("id").equals(d.get("hire_id"))).toList());
         m.addAttribute("hires",rows.stream().filter(h -> h.get("next_hire_id")==null).toList());
         m.addAttribute("hireHistory",rows.stream().filter(h -> h.get("next_hire_id")!=null).toList()); return "hr"; }
     @PostMapping("/hr/hires") @Transactional String create(@RequestParam String given, @RequestParam String family,

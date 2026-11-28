@@ -37,8 +37,8 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * A tenant's issuance hook, from its settings ({@code issuanceHook.url}): the issuer asks {@code <url>/authorize} before it signs a
- * credential of one of the tenant's referenced offers, and tells {@code <url>/issued} after. Without a URL, credentials are issued as
- * the offer says.
+ * credential of one of the tenant's referenced offers, tells {@code <url>/issued} after, and {@code <url>/notified} when a wallet
+ * reports on one. Without a URL, credentials are issued as the offer says.
  * <ul>
  *   <li><b>Authenticated</b> with a short-lived JWT ({@code typ hook+jwt}) signed by the tenant's own issuer signing key, in
  *       {@code Authorization: Bearer}: {@code iss} the tenant's issuer identifier, {@code aud} the URL called, a {@code jti}, and
@@ -47,6 +47,9 @@ import java.util.concurrent.TimeUnit;
  *       {@code credential_request_denied}; anything else, or no answer in {@link #TIMEOUT}, issues nothing (503 to the wallet).</li>
  *   <li><b>issued</b> carries the {@code credential} (the tenant's own) and its {@code credentialDigest}; retried in the background ({@link #RETRIES}), as the credential is already in the wallet's response; the tenant
  *       treats it as idempotent per reference and format.</li>
+ *   <li><b>notified</b>: {@code { reference, credentialConfigurationId, event, notificationId, receivedAt, description? }}, sent in
+ *       the background and retried the same way. A tenant without the path (404 or 405) is not asked again for that notice; it can
+ *       still read it from the offer API. The tenant treats it as idempotent per notificationId and event.</li>
  * </ul>
  */
 public final class TenantIssuanceHook implements IssuanceHook {
@@ -100,6 +103,43 @@ public final class TenantIssuanceHook implements IssuanceHook {
         // The credential itself goes to the tenant: it is the tenant's own, and a tenant (the bank) checks later presentations against it.
         String body = body(attempt, credential);
         tell(context, url, body, attempt, 0);
+    }
+
+    @Override
+    public void notified(IssuerContext context, Notice notice) {
+        Optional<URI> hook = hookOf(context);
+        if (hook.isEmpty()) return;
+        URI url = hook.get().resolve(hook.get().getPath().endsWith("/") ? "notified" : hook.get().getPath() + "/notified");
+        ObjectNode body = MAPPER.createObjectNode()
+                .put("reference", notice.reference())
+                .put("credentialConfigurationId", notice.credentialConfigurationId())
+                .put("event", notice.event())
+                .put("notificationId", notice.notificationId())
+                .put("receivedAt", notice.receivedAt().toString());
+        notice.description().ifPresent(d -> body.put("description", d));
+        // Off the wallet's request thread: the wallet doesn't wait for the tenant.
+        String json = body.toString();
+        retries.execute(() -> report(context, url, json, notice, 0));
+    }
+
+    private void report(IssuerContext context, URI url, String body, Notice notice, int attemptNumber) {
+        try {
+            HttpResponse<String> response = http.send(request(context, url, body), HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() / 100 == 2) return;
+            if (response.statusCode() == 404 || response.statusCode() == 405) {
+                log.info("tenant {} takes no notified calls (reference {})", context.tenantId(), notice.reference());
+                return;
+            }
+            log.warn("tenant {} hook answered {} to notified for reference {}", context.tenantId(), response.statusCode(), notice.reference());
+        } catch (Exception e) {
+            if (e instanceof InterruptedException) Thread.currentThread().interrupt();
+            log.warn("tenant {} hook unreachable for notified, reference {}: {}", context.tenantId(), notice.reference(), e.toString());
+        }
+        if (attemptNumber < RETRIES.length) {
+            retries.schedule(() -> report(context, url, body, notice, attemptNumber + 1), RETRIES[attemptNumber], TimeUnit.SECONDS);
+        } else {
+            log.error("tenant {} was never told of {} for reference {}", context.tenantId(), notice.event(), notice.reference());
+        }
     }
 
     private void tell(IssuerContext context, URI url, String body, Attempt attempt, int attemptNumber) {

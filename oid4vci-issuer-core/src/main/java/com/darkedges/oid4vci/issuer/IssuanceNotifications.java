@@ -57,6 +57,13 @@ public final class IssuanceNotifications {
         this.clock = clock;
     }
 
+    private IssuanceHook hook = IssuanceHook.NONE;
+
+    /** The tenant's hook, told of each new event for one of its references ({@link IssuanceHook#notified}). None by default. */
+    public void setIssuanceHook(IssuanceHook hook) {
+        this.hook = hook == null ? IssuanceHook.NONE : hook;
+    }
+
     /** What a credential response adds. */
     public record Registration(String notificationId, String token, long expiresIn) {}
 
@@ -131,6 +138,18 @@ public final class IssuanceNotifications {
         received.add(event);
         store.save(key.orElseThrow(), new IssuanceNotificationStore.Issuance(issuance.subject(), issuance.credentialConfigurationId(),
                 issuance.reference(), issuance.issuedAt(), issuance.expiresAt(), received));
+        issuance.reference().ifPresent(reference -> tell(context,
+                new IssuanceHook.Notice(reference, issuance.credentialConfigurationId(), event, notificationId, description, now)));
+    }
+
+    /** The notification is recorded either way: a hook that fails must not fail the wallet's request. */
+    private void tell(IssuerContext context, IssuanceHook.Notice notice) {
+        try {
+            hook.notified(context, notice);
+        } catch (RuntimeException e) {
+            System.getLogger(IssuanceNotifications.class.getName()).log(System.Logger.Level.WARNING,
+                    "the tenant's hook failed for reference " + notice.reference() + ": " + e);
+        }
     }
 
     /** The notifications received for one of the tenant's references, oldest first. */

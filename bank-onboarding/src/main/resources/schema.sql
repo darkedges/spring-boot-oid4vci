@@ -49,3 +49,5 @@ CREATE TABLE IF NOT EXISTS bank_directory_outbox (
  person_id uuid PRIMARY KEY REFERENCES bank_hire(id), changed_at timestamptz NOT NULL DEFAULT now(),
  synced_at timestamptz, attempts integer NOT NULL DEFAULT 0, next_attempt_at timestamptz NOT NULL DEFAULT now(), last_error text
 );
+-- When the holder deleted the credential from their wallet (the issuer's notified call). It stays issued: this revokes nothing.
+ALTER TABLE bank_issued_credential ADD COLUMN IF NOT EXISTS deleted_at timestamptz;

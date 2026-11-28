@@ -23,6 +23,9 @@ export function updateCards(document, incoming, announce) {
     if (!old) { list.prepend(document.importNode(fresh, true)); continue; }
     const message = notice(old.dataset.status, fresh.dataset.status, fresh.querySelector('h2').textContent);
     if (message) announce(message);
+    if (fresh.querySelectorAll('.wallet-deletion').length > old.querySelectorAll('.wallet-deletion').length) {
+      announce(`${fresh.querySelector('h2').textContent}: a staff credential was deleted from their wallet.`);
+    }
     if (old.isEqualNode(fresh)) continue;
     const replacement = document.importNode(fresh, true);
     // Poll responses can carry new CSRF masks even when the hire has not changed.

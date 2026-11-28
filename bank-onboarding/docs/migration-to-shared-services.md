@@ -87,6 +87,7 @@ run in the bank, while the issuer is issuing.
 ```
 POST <bank>/api/issuer-hook/v1/authorize   { "reference", "credentialConfigurationId", "format", "holderKeyThumbprint" }
   → 200 { "allow": true }    |  409 { "allow": false, "reason": "staff_inactive" | "superseded" | "already_issued" }
+POST <bank>/api/issuer-hook/v1/notified    { "reference", "credentialConfigurationId", "event", "notificationId", "receivedAt" }
 POST <bank>/api/issuer-hook/v1/issued      { "reference", "credentialConfigurationId", "format", "credentialDigest" }
   → 204
 ```

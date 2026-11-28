@@ -24,6 +24,16 @@ public interface IssuanceHook {
     /** The credential was issued (and is in the response). Must not throw; failures to tell the tenant are the hook's to retry. */
     void issued(IssuerContext context, Attempt attempt, String credential);
 
+    /** What a wallet said became of a credential issued for one of the tenant's references. */
+    record Notice(String reference, String credentialConfigurationId, String event, String notificationId,
+                  java.util.Optional<String> description, java.time.Instant receivedAt) {}
+
+    /**
+     * A wallet reported on a credential (OID4VCI notification), such as that it was deleted. Called once per new event. Must neither
+     * throw nor delay the wallet; telling the tenant, and retrying, is the hook's. By default the tenant is not told.
+     */
+    default void notified(IssuerContext context, Notice notice) {}
+
     /** No hook: every credential is issued as the offer says. */
     IssuanceHook NONE = new IssuanceHook() {
         @Override public void authorize(IssuerContext context, Attempt attempt) {}

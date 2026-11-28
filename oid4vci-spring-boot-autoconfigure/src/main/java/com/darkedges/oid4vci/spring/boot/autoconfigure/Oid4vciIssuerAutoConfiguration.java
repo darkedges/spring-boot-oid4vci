@@ -192,8 +192,12 @@ public class Oid4vciIssuerAutoConfiguration {
     @ConditionalOnBean(IssuerKeys.class)
     @org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name = "oid4vci.issuer.notifications-enabled", havingValue = "true")
     public com.darkedges.oid4vci.issuer.IssuanceNotifications issuanceNotifications(
-            com.darkedges.oid4vci.issuer.IssuanceNotificationStore store, IssuerKeys keys, Oid4vciIssuerProperties properties) {
-        return new com.darkedges.oid4vci.issuer.IssuanceNotifications(store, keys, properties.getNotificationTokenTtl(), Clock.systemUTC());
+            com.darkedges.oid4vci.issuer.IssuanceNotificationStore store, IssuerKeys keys, Oid4vciIssuerProperties properties,
+            ObjectProvider<com.darkedges.oid4vci.issuer.IssuanceHook> issuanceHook) {
+        var notifications = new com.darkedges.oid4vci.issuer.IssuanceNotifications(
+                store, keys, properties.getNotificationTokenTtl(), Clock.systemUTC());
+        issuanceHook.ifAvailable(notifications::setIssuanceHook);
+        return notifications;
     }
 
     @Bean

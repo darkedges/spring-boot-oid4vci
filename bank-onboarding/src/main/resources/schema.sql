@@ -30,6 +30,8 @@ ALTER TABLE bank_presentation ADD COLUMN IF NOT EXISTS channel text NOT NULL DEF
 ALTER TABLE bank_presentation ADD COLUMN IF NOT EXISTS consumed_at timestamptz;
 -- Why a verified presentation was refused (staff_inactive, staff_superseded), so whoever waits on it learns at once rather than at expiry.
 ALTER TABLE bank_presentation ADD COLUMN IF NOT EXISTS refused_reason text;
+-- Set for a presentation the shared verifier carries out: its transaction there, whose result the bank collects.
+ALTER TABLE bank_presentation ADD COLUMN IF NOT EXISTS verifier_transaction_id text;
 -- Staff credentials the shared issuer issued for a hire (its issuance hook tells the bank): once per format.
 CREATE TABLE IF NOT EXISTS bank_issued_credential (
  hire_id uuid NOT NULL REFERENCES bank_hire(id), format text NOT NULL, credential_configuration_id text NOT NULL,

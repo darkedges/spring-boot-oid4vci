@@ -55,6 +55,26 @@ public class BankController {
     private final PassportTrust passports;
     /** The bank's tenant of the shared credential issuer, when configured (bank.credentials.issuer). */
     private SharedIssuer shared;
+    /** The bank's tenant of the shared verifier, when configured; staff sign-ins start there with bank.credentials.verify-staff-via=shared. */
+    private SharedVerifier verifier;
+    private boolean staffViaShared;
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(BankController.class);
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    void setSharedVerifier(SharedVerifier verifier) { this.verifier=verifier; }
+    /** Where new staff sign-ins are verified: here ({@code embedded}) or by the shared verifier ({@code shared}). */
+    @org.springframework.beans.factory.annotation.Autowired
+    void setStaffVerification(@Value("${bank.credentials.verify-staff-via:embedded}") String via) {
+        boolean wanted="shared".equalsIgnoreCase(via.trim());
+        if (!wanted && !"embedded".equalsIgnoreCase(via.trim())) throw new IllegalArgumentException("bank.credentials.verify-staff-via is shared or embedded");
+        this.staffViaShared=wanted;
+    }
+    /** Refuses to run with shared staff verification asked for but not configured. */
+    @jakarta.annotation.PostConstruct
+    void checkStaffVerification() {
+        if (staffViaShared && (verifier==null || shared==null)) {
+            throw new IllegalStateException("bank.credentials.verify-staff-via=shared needs bank.credentials.issuer and bank.credentials.verifier");
+        }
+    }
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     void setSharedIssuer(SharedIssuer shared) { this.shared = shared; }
     private final ECKey bankKey;
@@ -227,16 +247,86 @@ public class BankController {
     NewPresentation newPresentation(UUID hire, String channel) {
         // The database's clock sets the expiry, as it is the one that checks it (expires_at > now()).
         String id=token(), secret=token();
+        if (hire==null && staffViaShared) return sharedStaffPresentation(id,secret,channel);
         Instant expires=db.queryForObject("insert into bank_presentation(id,nonce,hire_id,browser_secret_hash,expires_at,channel) values (?,?,?,?,now() + interval '600 seconds',?) returning expires_at",java.sql.Timestamp.class,id,token(),hire,hash(secret),channel).toInstant();
         String request=base+"/vp/request/"+id;
         return new NewPresentation(id,secret,expires,request,"openid4vp://?request_uri="+java.net.URLEncoder.encode(request,java.nio.charset.StandardCharsets.UTF_8));
     }
+    /** A staff sign-in the shared verifier carries out: its request, its response; the bank collects the result ({@link #settle}). */
+    private NewPresentation sharedStaffPresentation(String id, String secret, String channel) {
+        SharedVerifier.Transaction asked;
+        try { asked=verifier.create("staff-sign-in",id,Duration.ofSeconds(600)); }
+        catch (Exception unavailable) {
+            log.warn("The shared verifier could not start a staff sign-in: {}", unavailable.toString());
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"Staff sign-in is unavailable. Try again shortly.");
+        }
+        Instant expires=db.queryForObject("insert into bank_presentation(id,nonce,hire_id,browser_secret_hash,expires_at,channel,verifier_transaction_id) values (?,?,?,?,now() + interval '600 seconds',?,?) returning expires_at",java.sql.Timestamp.class,id,token(),null,hash(secret),channel,asked.id()).toInstant();
+        return new NewPresentation(id,secret,expires,asked.requestUri(),asked.walletUri());
+    }
+    /**
+     * Brings a presentation the shared verifier is carrying out up to date: once the verifier has verified it, collects the result and
+     * applies the bank's rules, completing or refusing the presentation. Call within a transaction, and only for whoever may see the
+     * presentation; true when it changed. While the verifier can't be reached the presentation stays pending.
+     */
+    boolean settle(String id) {
+        if (verifier==null) return false;
+        // Locked, so of several callers one collects the result; the others then find it settled.
+        var rows=db.queryForList("select verifier_transaction_id from bank_presentation where id=? and verifier_transaction_id is not null and complete=false and refused_reason is null and expires_at>now() for update",id);
+        if (rows.isEmpty()) return false;
+        String transaction=(String)rows.getFirst().get("verifier_transaction_id");
+        Optional<SharedVerifier.Credential> verified;
+        try {
+            if (!"verified".equals(verifier.status(transaction))) return false;
+            verified=verifier.collect(transaction,"staff");
+        } catch (Exception unavailable) {
+            log.warn("Could not collect a staff sign-in from the shared verifier: {}", unavailable.toString());
+            return false;
+        }
+        if (verified.isEmpty()) return false;
+        var credential=verified.get(); var claims=credential.claims();
+        // The same rules as a presentation the bank verifies itself. The verifier trusts its issuers for every query, so which issuer
+        // may issue this type is checked here.
+        String iss=credential.issuer(), vct=claims.path("vct").asText();
+        UUID staff;
+        try {
+            require("dc+sd-jwt".equals(credential.format()) && iss.equals(claims.path("iss").asText()) && staffIssuers().contains(iss) && vct.equals(iss+"/vct/BankStaffCredential"),"Wrong credential type");
+            require(claims.has("exp") && claims.path("exp").asLong()>Instant.now().getEpochSecond(),"Expired credential");
+            require(credential.holderKey().isObject(),"No holder key was proved");
+            require(iss.equals(claims.path("bank_id").asText()),"Wrong bank");
+            staff=UUID.fromString(claims.path("staff_id").asText());
+        } catch (ResponseStatusException | IllegalArgumentException unacceptable) {
+            // Verified, yet not a staff credential of this bank: it can't be answered again, and expires.
+            log.warn("The shared verifier's result for a staff sign-in was not accepted: {}", unacceptable.getMessage());
+            return false;
+        }
+        if (!isActive(staff)) { refuse(id,"staff_inactive","Staff access is inactive"); return true; }
+        var current=db.queryForMap("select issued_credential from bank_hire where id=?",staff);
+        if (!(current.get("issued_credential") instanceof String stored && sameCredential(stored,claims,credential.holderKey()))) {
+            refuse(id,"staff_superseded","Staff credential has been superseded"); return true;
+        }
+        db.update("update bank_presentation set complete=true,staff_id=? where id=?",staff,id);
+        return true;
+    }
+    /**
+     * Whether verified claims are those of the stored credential. The verifier hands out claims, not the credential, so it is matched on
+     * what tells one issuance from another: its issuer, when it was issued and expires, and the holder key it is bound to.
+     */
+    static boolean sameCredential(String stored, JsonNode claims, JsonNode holderKey) {
+        try {
+            JsonNode issued=JSON.readTree(com.nimbusds.jwt.SignedJWT.parse(stored.split("~",2)[0]).getPayload().toString());
+            for (String name:List.of("iss","iat","exp")) if (!issued.path(name).asText().equals(claims.path(name).asText())) return false;
+            return thumbprint(issued.path("cnf").path("jwk")).equals(thumbprint(holderKey));
+        } catch (Exception unreadable) { return false; }
+    }
+    private static String thumbprint(JsonNode jwk) throws Exception { return com.nimbusds.jose.jwk.JWK.parse(jwk.toString()).computeThumbprint().toString(); }
     /** INVITED and not superseded by a newer attempt: the only state in which a Passport presentation can be started. */
     boolean awaitingIdentity(UUID hire) {
         return db.queryForObject("select count(*) from bank_hire h where h.id=? and h.status='INVITED' and not exists (select 1 from bank_hire newer where newer.previous_hire_id=h.id)",Integer.class,hire)==1;
     }
     @GetMapping(value="/vp/request/{id}",produces="application/json") @ResponseBody String request(@PathVariable String id) throws Exception {
         var tx=transaction(id); String type=tx.get("hire_id")==null?"staff":"passport";
+        // The shared verifier hosts the request of a presentation it carries out.
+        require(tx.get("verifier_transaction_id")==null,"This presentation is not answered here");
         List<Map<String,Object>> claims=new ArrayList<>();
         for(String field: type.equals("staff")?List.of("staff_id","bank_id"):List.of("given_name","family_name","birth_date","expiry_date","assurance_level","evidence")) claims.add(Map.of("path",List.of(field)));
         Instant cutoff=type.equals("passport")?passportCheckAfter((UUID)tx.get("hire_id")):null;
@@ -268,6 +358,7 @@ public class BankController {
     @PostMapping(value="/vp/response/{id}",produces="application/json") @ResponseBody @Transactional(noRollbackFor=PresentationRefused.class) String response(@PathVariable String id,@RequestParam String state,@RequestParam("vp_token") String vp) throws Exception {
         require(id.equals(state),"Wrong state");
         var tx=db.queryForMap("select * from bank_presentation where id=? and expires_at>now() for update",id); require(!Boolean.TRUE.equals(tx.get("complete")),"Presentation already used"); require(tx.get("refused_reason")==null,"Presentation was refused");
+        require(tx.get("verifier_transaction_id")==null,"This presentation is not answered here");
         String type=tx.get("hire_id")==null?"staff":"passport";
         var entry=JSON.readTree(vp).path(type); require(entry.isArray() && entry.size()==1 && entry.get(0).isTextual(),"Expected one credential");
         var query=CredentialQuery.builder(type,CredentialFormat.DC_SD_JWT).meta(new SdJwtVcMeta(vcts(type))).build();
@@ -299,19 +390,22 @@ public class BankController {
         db.update("update bank_presentation set complete=true,staff_id=? where id=?",staff,id);
         return "{}";
     }
-    @GetMapping(value="/vp/status/{id}",produces="application/json") @ResponseBody
+    @GetMapping(value="/vp/status/{id}",produces="application/json") @ResponseBody @Transactional
     String presentationStatus(@PathVariable String id, HttpSession session) {
         Object secret=session.getAttribute("vp:"+id);
         if(secret==null) throw new ResponseStatusException(HttpStatus.FORBIDDEN,"Open the request in its original browser");
         var rows=db.queryForList("select complete,refused_reason,expires_at,browser_secret_hash from bank_presentation where id=?",id);
         if(rows.size()!=1 || !hash(secret.toString()).equals(rows.getFirst().get("browser_secret_hash")))
             throw new ResponseStatusException(HttpStatus.FORBIDDEN,"Open the request in its original browser");
+        if (settle(id)) rows=db.queryForList("select complete,refused_reason,expires_at,browser_secret_hash from bank_presentation where id=?",id);
         var tx=rows.getFirst();
         String status=presentationStatus(tx, ((java.sql.Timestamp)tx.get("expires_at")).toInstant().isAfter(Instant.now()));
         return "{\"status\":\""+status+"\"}";
     }
-    @GetMapping("/vp/result/{id}") String result(@PathVariable String id,HttpSession session,jakarta.servlet.http.HttpServletRequest servletRequest) {
+    @GetMapping("/vp/result/{id}") @Transactional String result(@PathVariable String id,HttpSession session,jakarta.servlet.http.HttpServletRequest servletRequest) {
         var tx=transaction(id); Object secret=session.getAttribute("vp:"+id);
+        // For a browser that came here without the page having polled the status.
+        if (secret!=null && hash(secret.toString()).equals(tx.get("browser_secret_hash")) && settle(id)) tx=transaction(id);
         require(secret!=null && hash(secret.toString()).equals(tx.get("browser_secret_hash")) && Boolean.TRUE.equals(tx.get("complete")),"Presentation has not completed in this browser");
         session.removeAttribute("vp:"+id);
         if(tx.get("staff_id")!=null) { servletRequest.changeSessionId(); session.setAttribute("staff",tx.get("staff_id").toString()); return "redirect:/staff"; }

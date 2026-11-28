@@ -260,6 +260,9 @@ Each step is its own PR and can ship without the next.
   the bank offers and asks for `BankStaffCredential` only.
 - Step 6 is done (oid4vp #14, #15, #17), without `credential_sets` for mdoc in the wallet (2.5).
 - Step 7: the settings are in AuthStack's `terraform/risk-e-bank`; enabling the tenant is done in the console.
+- Step 8, staff sign-in, is built behind `BANK_VERIFY_STAFF_VIA` (`SharedVerifier`). The bank asks the verifier, and collects the
+  result when the page or the Journey API asks for the status. As the verifier hands out claims rather than the credential, "superseded"
+  compares the issuer, issue and expiry times and holder key with the stored credential. Passport checks are still verified by the bank.
 
 ## Decisions
 

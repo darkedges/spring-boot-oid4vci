@@ -28,7 +28,6 @@ import java.security.MessageDigest;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -62,8 +61,7 @@ public final class SharedIssuer {
     /** One processor per hook path, each expecting its own audience (the URL called): built once, safe to share between threads. */
     private final Map<String, DefaultJWTProcessor<SecurityContext>> hookTokens;
     private final Map<String, Instant> seenHookTokens = new ConcurrentHashMap<>();
-    private volatile String accessToken;
-    private volatile Instant accessTokenExpires = Instant.EPOCH;
+    private final WorkerToken workerToken;
 
     public SharedIssuer(Settings settings, HttpClient http, Clock clock) {
         this(settings, http, clock, JWKSourceBuilder.create(url(settings.issuer() + "/jwks")).build());
@@ -74,6 +72,7 @@ public final class SharedIssuer {
         this.http = http;
         this.clock = clock;
         this.keys = keys;
+        this.workerToken = new WorkerToken(settings.tokenUrl(), settings.clientId(), settings.clientSecret(), http, clock);
         this.hookTokens = Map.of("authorize", hookProcessor("authorize"), "issued", hookProcessor("issued"), "notified", hookProcessor("notified"));
     }
 
@@ -120,7 +119,7 @@ public final class SharedIssuer {
         ObjectNode claimNode = body.putObject("claims");
         claims.forEach(claimNode::put);
         HttpResponse<String> response = http.send(HttpRequest.newBuilder(URI.create(settings.issuer() + "/tenant-api/v1/offers"))
-                .timeout(Duration.ofSeconds(10)).header("Content-Type", "application/json").header("Authorization", "Bearer " + token())
+                .timeout(Duration.ofSeconds(10)).header("Content-Type", "application/json").header("Authorization", "Bearer " + workerToken.get())
                 .POST(HttpRequest.BodyPublishers.ofString(body.toString())).build(), HttpResponse.BodyHandlers.ofString());
         if (response.statusCode() != 200 && response.statusCode() != 201) {
             throw new IllegalStateException("The shared issuer refused the staff offer: " + response.statusCode() + " " + response.body());
@@ -134,7 +133,7 @@ public final class SharedIssuer {
     public void withdraw(String reference) {
         try {
             http.send(HttpRequest.newBuilder(URI.create(settings.issuer() + "/tenant-api/v1/offers/" + URLEncoder.encode(reference, StandardCharsets.UTF_8)))
-                    .timeout(Duration.ofSeconds(10)).header("Authorization", "Bearer " + token()).DELETE().build(), HttpResponse.BodyHandlers.discarding());
+                    .timeout(Duration.ofSeconds(10)).header("Authorization", "Bearer " + workerToken.get()).DELETE().build(), HttpResponse.BodyHandlers.discarding());
         } catch (Exception e) {
             if (e instanceof InterruptedException) Thread.currentThread().interrupt();
         }
@@ -166,19 +165,6 @@ public final class SharedIssuer {
         seenHookTokens.values().removeIf(expires -> expires.isBefore(now));
         Instant expires = claims.getExpirationTime().toInstant();
         if (seenHookTokens.putIfAbsent(claims.getJWTID(), expires) != null) throw new HookCallRejected("This hook token was already used");
-    }
-
-    private synchronized String token() throws Exception {
-        if (accessToken != null && clock.instant().isBefore(accessTokenExpires)) return accessToken;
-        String basic = Base64.getEncoder().encodeToString((settings.clientId() + ":" + settings.clientSecret()).getBytes(StandardCharsets.UTF_8));
-        HttpResponse<String> response = http.send(HttpRequest.newBuilder(settings.tokenUrl()).timeout(Duration.ofSeconds(10))
-                .header("Authorization", "Basic " + basic).header("Content-Type", "application/x-www-form-urlencoded")
-                .POST(HttpRequest.BodyPublishers.ofString("grant_type=client_credentials")).build(), HttpResponse.BodyHandlers.ofString());
-        if (response.statusCode() != 200) throw new IllegalStateException("AuthStack refused the bank's credential services token: " + response.statusCode());
-        JsonNode body = JSON.readTree(response.body());
-        accessToken = body.path("access_token").asText();
-        accessTokenExpires = clock.instant().plusSeconds(Math.max(60, body.path("expires_in").asLong(3600)) - 60);
-        return accessToken;
     }
 
     static String sha256(byte[] bytes) {

@@ -68,6 +68,10 @@ bank:
     client-secret: ${BANK_CREDENTIALS_CLIENT_SECRET:}
     # The mobile wallet collects SD-JWT VC only for now (oid4vci-wallet#3); add BankStaffCredentialMdoc once it collects mdocs.
     offer-configurations: ${BANK_CREDENTIALS_OFFER_CONFIGURATIONS:BankStaffCredential}
+    # The bank's tenant of the shared verifier (https://bank.verifier.zkp.au), called with the same worker. With verify-staff-via=shared,
+    # new staff sign-ins are presented to it and the bank collects what it verified (default embedded: the bank verifies them itself).
+    verifier: ${BANK_CREDENTIALS_VERIFIER:}
+    verify-staff-via: ${BANK_VERIFY_STAFF_VIA:embedded}
   # Where invitation links send applicants: this portal (portal) or the Authr applicant journey (authr, at applicant-entry-url).
   applicant-entry: ${BANK_APPLICANT_ENTRY:portal}
   applicant-entry-url: ${BANK_APPLICANT_ENTRY_URL:}

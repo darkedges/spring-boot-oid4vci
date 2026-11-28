@@ -66,6 +66,22 @@ public class BankSecurity {
                 clientId, clientSecret, base.replaceAll("/+$", "") + "/api/issuer-hook/v1", offerConfigurations, shared),
                 java.net.http.HttpClient.newBuilder().connectTimeout(java.time.Duration.ofSeconds(5)).build(), Clock.systemUTC());
     }
+    /**
+     * The bank's tenant of the shared credential verifier (SharedVerifier), when bank.credentials.verifier is set. It calls with the same
+     * dedicated worker as the issuer's tenant API.
+     */
+    @Bean
+    @org.springframework.boot.autoconfigure.condition.ConditionalOnExpression("!'${bank.credentials.verifier:}'.isBlank()")
+    SharedVerifier sharedVerifier(@Value("${bank.credentials.verifier}") String verifier,
+                                  @Value("${bank.credentials.token-url:}") String tokenUrl, @Value("${bank.credentials.client-id:}") String clientId,
+                                  @Value("${bank.credentials.client-secret:}") String clientSecret) {
+        if (tokenUrl.isBlank() || clientId.isBlank() || clientSecret.isBlank()) {
+            throw new IllegalArgumentException("bank.credentials.verifier needs bank.credentials.token-url, client-id and client-secret");
+        }
+        var http = java.net.http.HttpClient.newBuilder().connectTimeout(java.time.Duration.ofSeconds(5)).build();
+        return new SharedVerifier(verifier.trim(), http,
+                new WorkerToken(java.net.URI.create(tokenUrl), clientId, clientSecret, http, Clock.systemUTC()));
+    }
     /** The shared issuer's calls to the bank's issuance hook: stateless, no CSRF; IssuerHookController checks each call's signed token. */
     @Bean @Order(-2) SecurityFilterChain issuerHook(HttpSecurity http) throws Exception {
         return http.securityMatcher("/api/issuer-hook/**").csrf(c -> c.disable())

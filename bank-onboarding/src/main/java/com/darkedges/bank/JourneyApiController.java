@@ -113,9 +113,10 @@ public class JourneyApiController {
 
     // ── Presentation results ─────────────────────────────────────────────────────────────────────────────────────────────────
 
-    @GetMapping("/presentations/{id}")
+    @GetMapping("/presentations/{id}") @Transactional
     Map<String, Object> presentation(@PathVariable String id, @RequestHeader(value = "X-Completion-Secret", required = false) String secret) {
         var tx = ownPresentation(id, secret, false);
+        if (bank.settle(id)) tx = ownPresentation(id, secret, false);
         // The same answer as the portal's /vp/status: an expired request reports expired even if the wallet completed it. "refused" means
         // the wallet presented a valid credential the bank turned down (refusedReason: staff_inactive or staff_superseded).
         String status = BankController.presentationStatus(tx, Boolean.TRUE.equals(tx.get("live")));
@@ -125,6 +126,7 @@ public class JourneyApiController {
     @PostMapping("/presentations/{id}/consume") @Transactional
     Map<String, Object> consume(@PathVariable String id, @RequestHeader(value = "X-Completion-Secret", required = false) String secret) {
         var tx = ownPresentation(id, secret, true);
+        if (bank.settle(id)) tx = ownPresentation(id, secret, true);
         if (!Boolean.TRUE.equals(tx.get("live"))) throw new JourneyRefusal(HttpStatus.CONFLICT, "expired");
         if (!Boolean.TRUE.equals(tx.get("complete"))) throw new JourneyRefusal(HttpStatus.CONFLICT, "not_complete");
         if (tx.get("consumed_at") != null) throw new JourneyRefusal(HttpStatus.CONFLICT, "already_consumed");

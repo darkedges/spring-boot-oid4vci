@@ -1,0 +1,92 @@
+# The bank portal itself, layered on docker-compose.yml (its database). Use `make start`: the helper reads .env, discovers the
+# HR sign-in settings from Terraform and passes them here. A name with no "=" is passed only when it is set, so an optional
+# setting left unset stays unset. Nothing secret is written in this file.
+services:
+  postgres:
+    # With the portal: otherwise a reboot would bring the portal back without its database.
+    restart: unless-stopped
+
+  bank:
+    image: risk-e-bank
+    build:
+      context: ..
+      dockerfile: bank-onboarding/Dockerfile
+      additional_contexts:
+        oid4vp: ${BANK_OID4VP_DIR:-../../oid4vp}
+    # Comes back after a crash or a reboot.
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      # As when it ran on the host: the tunnel in front of it reaches this port.
+      - "8094:8094"
+    volumes:
+      # The two key files, read-only, from where `make setup` keeps them (outside the repository).
+      - type: bind
+        source: ${BANK_PRIVATE_JWK_FILE:?Run make start, or set BANK_PRIVATE_JWK_FILE}
+        target: /keys/bank-private.jwk
+        read_only: true
+        bind: { create_host_path: false }
+      - type: bind
+        source: ${PASSPORT_PUBLIC_JWK_FILE:?Run make start, or set PASSPORT_PUBLIC_JWK_FILE}
+        target: /keys/passport-public.jwk
+        read_only: true
+        bind: { create_host_path: false }
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8094"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 90s
+    environment:
+      # Inside this network the database is "postgres", whatever port it is published on.
+      - BANK_DATABASE_URL=jdbc:postgresql://postgres:5432/bank
+      - BANK_PRIVATE_JWK_FILE=/keys/bank-private.jwk
+      - PASSPORT_PUBLIC_JWK_FILE=/keys/passport-public.jwk
+      - BANK_DATABASE_PASSWORD
+      - BANK_DATABASE_USER
+      - SPRING_PROFILES_ACTIVE
+      - BANK_NAME
+      - BANK_BASE_URL
+      - BANK_COOKIE_SECURE
+      - BANK_HR_CLAIM
+      - BANK_TOKEN_DEBUG_ENABLED
+      - PASSPORT_ISSUER
+      - BANK_OIDC_ISSUER
+      - BANK_OIDC_CLIENT_ID
+      - BANK_OIDC_CLIENT_SECRET
+      - BANK_MAIL_ENABLED
+      - BANK_MAIL_FROM
+      - BANK_SMTP_HOST
+      - BANK_SMTP_PORT
+      - BANK_SMTP_USERNAME
+      - BANK_SMTP_PASSWORD
+      - BANK_ISSUER_STORE_TYPE
+      - ISSUER_STORE_ENCRYPTION_KEY
+      - BANK_JOURNEY_ISSUER
+      - BANK_JOURNEY_JWK_SET_URI
+      - BANK_JOURNEY_AUDIENCE
+      - BANK_JOURNEY_SCOPE
+      - BANK_JOURNEY_CLIENTS
+      - BANK_JOURNEY_STAFF_SIGN_IN_PER_MINUTE
+      - BANK_APPLICANT_ENTRY
+      - BANK_APPLICANT_ENTRY_URL
+      - BANK_CREDENTIALS_ISSUER
+      - BANK_ISSUE_VIA
+      - BANK_CREDENTIALS_TOKEN_URL
+      - BANK_CREDENTIALS_CLIENT_ID
+      - BANK_CREDENTIALS_CLIENT_SECRET
+      - BANK_CREDENTIALS_OFFER_CONFIGURATIONS
+      - BANK_STAFF_OIDC_ISSUER
+      - BANK_STAFF_OIDC_AUTHORIZATION_URI
+      - BANK_STAFF_OIDC_CLIENT_ID
+      - BANK_STAFF_OIDC_CLIENT_SECRET
+      - BANK_STAFF_EMAIL_DOMAIN
+      - BANK_AUTHSTACK_API_URL
+      - BANK_AUTHSTACK_TOKEN_URL
+      - BANK_AUTHSTACK_ENVIRONMENT_ID
+      - BANK_AUTHSTACK_CLIENT_ID
+      - BANK_AUTHSTACK_CLIENT_SECRET
+      - BANK_AUTHSTACK_POPULATION_ID
+      - BANK_AUTHSTACK_CONSOLE_ME_URL

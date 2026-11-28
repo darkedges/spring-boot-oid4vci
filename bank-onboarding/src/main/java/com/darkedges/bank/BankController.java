@@ -55,24 +55,35 @@ public class BankController {
     private final PassportTrust passports;
     /** The bank's tenant of the shared credential issuer, when configured (bank.credentials.issuer). */
     private SharedIssuer shared;
-    /** The bank's tenant of the shared verifier, when configured; staff sign-ins start there with bank.credentials.verify-staff-via=shared. */
+    /** The bank's tenant of the shared verifier, when configured; presentations start there with bank.credentials.verify-...-via=shared. */
     private SharedVerifier verifier;
-    private boolean staffViaShared;
+    private boolean staffViaShared, passportViaShared;
     private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(BankController.class);
     @org.springframework.beans.factory.annotation.Autowired(required=false)
     void setSharedVerifier(SharedVerifier verifier) { this.verifier=verifier; }
     /** Where new staff sign-ins are verified: here ({@code embedded}) or by the shared verifier ({@code shared}). */
     @org.springframework.beans.factory.annotation.Autowired
     void setStaffVerification(@Value("${bank.credentials.verify-staff-via:embedded}") String via) {
-        boolean wanted="shared".equalsIgnoreCase(via.trim());
-        if (!wanted && !"embedded".equalsIgnoreCase(via.trim())) throw new IllegalArgumentException("bank.credentials.verify-staff-via is shared or embedded");
-        this.staffViaShared=wanted;
+        this.staffViaShared=shared("verify-staff-via",via);
     }
-    /** Refuses to run with shared staff verification asked for but not configured. */
+    /** The same for applicants' passport checks. */
+    @org.springframework.beans.factory.annotation.Autowired
+    void setPassportVerification(@Value("${bank.credentials.verify-passport-via:embedded}") String via) {
+        this.passportViaShared=shared("verify-passport-via",via);
+    }
+    private static boolean shared(String setting, String via) {
+        boolean wanted="shared".equalsIgnoreCase(via.trim());
+        if (!wanted && !"embedded".equalsIgnoreCase(via.trim())) throw new IllegalArgumentException("bank.credentials."+setting+" is shared or embedded");
+        return wanted;
+    }
+    /** Refuses to run with shared verification asked for but not configured. */
     @jakarta.annotation.PostConstruct
-    void checkStaffVerification() {
+    void checkVerification() {
         if (staffViaShared && (verifier==null || shared==null)) {
             throw new IllegalStateException("bank.credentials.verify-staff-via=shared needs bank.credentials.issuer and bank.credentials.verifier");
+        }
+        if (passportViaShared && verifier==null) {
+            throw new IllegalStateException("bank.credentials.verify-passport-via=shared needs bank.credentials.verifier");
         }
     }
     @org.springframework.beans.factory.annotation.Autowired(required = false)
@@ -247,20 +258,35 @@ public class BankController {
     NewPresentation newPresentation(UUID hire, String channel) {
         // The database's clock sets the expiry, as it is the one that checks it (expires_at > now()).
         String id=token(), secret=token();
-        if (hire==null && staffViaShared) return sharedStaffPresentation(id,secret,channel);
+        if (hire==null ? staffViaShared : passportViaShared) return sharedPresentation(id,secret,hire,channel);
         Instant expires=db.queryForObject("insert into bank_presentation(id,nonce,hire_id,browser_secret_hash,expires_at,channel) values (?,?,?,?,now() + interval '600 seconds',?) returning expires_at",java.sql.Timestamp.class,id,token(),hire,hash(secret),channel).toInstant();
         String request=base+"/vp/request/"+id;
         return new NewPresentation(id,secret,expires,request,"openid4vp://?request_uri="+java.net.URLEncoder.encode(request,java.nio.charset.StandardCharsets.UTF_8));
     }
-    /** A staff sign-in the shared verifier carries out: its request, its response; the bank collects the result ({@link #settle}). */
-    private NewPresentation sharedStaffPresentation(String id, String secret, String channel) {
+    /**
+     * What a verified passport of a trusted issuer does, whoever verified it: when it is fresh enough, with acceptable evidence, the
+     * hire gets the verified identity and holder key and moves to review. Anything else is refused before anything is written.
+     */
+    private void identityPresented(UUID hire, JsonNode c, String holderJwk) {
+        require(freshPassport(c,passportCheckAfter(hire)),"A fresh Passport check is required. Complete Identity Proofing again."); require(PassportEvidencePolicy.accepts(c),"Passport credential lacks acceptable proofing evidence or is expired"); require(!c.path("family_name").asText().isBlank() && !c.path("assurance_level").asText().isBlank(),"Missing identity or assurance");
+        LocalDate birth=LocalDate.parse(c.path("birth_date").asText());
+        require(db.update("update bank_hire set verified_given=?,verified_family=?,verified_birth=?,holder_jwk=?,status='REVIEW' where id=? and status='INVITED'",c.path("given_name").asText(),c.path("family_name").asText(),birth,holderJwk,hire)==1,"Hire is not awaiting identity"); audit(hire,"IDENTITY_PRESENTED","applicant"); directoryChanged(hire);
+    }
+    /**
+     * A presentation the shared verifier carries out (a staff sign-in, or an applicant's passport check): its request, its response; the
+     * bank collects the result ({@link #settle}). A passport check HR asked to be repeated passes on how recent it has to be.
+     */
+    private NewPresentation sharedPresentation(String id, String secret, UUID hire, String channel) {
         SharedVerifier.Transaction asked;
-        try { asked=verifier.create("staff-sign-in",id,Duration.ofSeconds(600)); }
-        catch (Exception unavailable) {
-            log.warn("The shared verifier could not start a staff sign-in: {}", unavailable.toString());
-            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"Staff sign-in is unavailable. Try again shortly.");
+        try {
+            Instant cutoff=hire==null?null:passportCheckAfter(hire);
+            asked=verifier.create(hire==null?"staff-sign-in":"passport",id,Duration.ofSeconds(600),
+                    cutoff==null?Map.of():Map.of("passport_check_after",cutoff.toString()));
+        } catch (Exception unavailable) {
+            log.warn("The shared verifier could not start a presentation: {}", unavailable.toString());
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"Presentations are unavailable. Try again shortly.");
         }
-        Instant expires=db.queryForObject("insert into bank_presentation(id,nonce,hire_id,browser_secret_hash,expires_at,channel,verifier_transaction_id) values (?,?,?,?,now() + interval '600 seconds',?,?) returning expires_at",java.sql.Timestamp.class,id,token(),null,hash(secret),channel,asked.id()).toInstant();
+        Instant expires=db.queryForObject("insert into bank_presentation(id,nonce,hire_id,browser_secret_hash,expires_at,channel,verifier_transaction_id) values (?,?,?,?,now() + interval '600 seconds',?,?) returning expires_at",java.sql.Timestamp.class,id,token(),hire,hash(secret),channel,asked.id()).toInstant();
         return new NewPresentation(id,secret,expires,asked.requestUri(),asked.walletUri());
     }
     /**
@@ -271,34 +297,54 @@ public class BankController {
     boolean settle(String id) {
         if (verifier==null) return false;
         // Locked, so of several callers one collects the result; the others then find it settled.
-        var rows=db.queryForList("select verifier_transaction_id from bank_presentation where id=? and verifier_transaction_id is not null and complete=false and refused_reason is null and expires_at>now() for update",id);
+        var rows=db.queryForList("select verifier_transaction_id,hire_id from bank_presentation where id=? and verifier_transaction_id is not null and complete=false and refused_reason is null and expires_at>now() for update",id);
         if (rows.isEmpty()) return false;
         String transaction=(String)rows.getFirst().get("verifier_transaction_id");
+        UUID hire=(UUID)rows.getFirst().get("hire_id");
+        // A result is handed out once, so it isn't collected for a hire that can no longer use it. The hire is locked until it is applied.
+        if (hire!=null) {
+            db.queryForList("select id from bank_hire where id=? for update",hire);
+            if (!awaitingIdentity(hire)) return false;
+        }
         Optional<SharedVerifier.Credential> verified;
         try {
             if (!"verified".equals(verifier.status(transaction))) return false;
-            verified=verifier.collect(transaction,"staff");
+            verified=verifier.collect(transaction,hire==null?"staff":"passport");
         } catch (Exception unavailable) {
-            log.warn("Could not collect a staff sign-in from the shared verifier: {}", unavailable.toString());
+            log.warn("Could not collect a presentation from the shared verifier: {}", unavailable.toString());
             return false;
         }
         if (verified.isEmpty()) return false;
-        var credential=verified.get(); var claims=credential.claims();
-        // The same rules as a presentation the bank verifies itself. The verifier trusts its issuers for every query, so which issuer
-        // may issue this type is checked here.
-        String iss=credential.issuer(), vct=claims.path("vct").asText();
-        UUID staff;
         try {
-            require("dc+sd-jwt".equals(credential.format()) && iss.equals(claims.path("iss").asText()) && staffIssuers().contains(iss) && vct.equals(iss+"/vct/BankStaffCredential"),"Wrong credential type");
-            require(claims.has("exp") && claims.path("exp").asLong()>Instant.now().getEpochSecond(),"Expired credential");
-            require(credential.holderKey().isObject(),"No holder key was proved");
-            require(iss.equals(claims.path("bank_id").asText()),"Wrong bank");
-            staff=UUID.fromString(claims.path("staff_id").asText());
-        } catch (ResponseStatusException | IllegalArgumentException unacceptable) {
-            // Verified, yet not a staff credential of this bank: it can't be answered again, and expires.
-            log.warn("The shared verifier's result for a staff sign-in was not accepted: {}", unacceptable.getMessage());
+            return hire==null ? settleStaff(id,verified.get()) : settlePassport(id,hire,verified.get());
+        } catch (ResponseStatusException | IllegalArgumentException | DateTimeException unacceptable) {
+            // Verified, yet not what the bank accepts: it can't be answered again, and expires. Nothing has been written.
+            log.warn("The shared verifier's result was not accepted: {}", unacceptable.getMessage());
             return false;
         }
+    }
+    /**
+     * The rules every verified result meets. The verifier trusts its issuers for every query, so which issuer may issue which type is
+     * checked here.
+     */
+    private JsonNode acceptable(SharedVerifier.Credential credential, java.util.function.BiPredicate<String,String> issuerAndType) {
+        var claims=credential.claims(); String iss=credential.issuer();
+        require("dc+sd-jwt".equals(credential.format()) && iss.equals(claims.path("iss").asText()) && issuerAndType.test(iss,claims.path("vct").asText()),"Wrong credential type");
+        require(claims.has("exp") && claims.path("exp").asLong()>Instant.now().getEpochSecond(),"Expired credential");
+        require(credential.holderKey().isObject(),"No holder key was proved");
+        return claims;
+    }
+    private boolean settlePassport(String id, UUID hire, SharedVerifier.Credential credential) {
+        var claims=acceptable(credential,passports::accepts);
+        identityPresented(hire,claims,credential.holderKey().toString());
+        db.update("update bank_presentation set complete=true where id=?",id);
+        return true;
+    }
+    private boolean settleStaff(String id, SharedVerifier.Credential credential) {
+        // The same rules as a presentation the bank verifies itself.
+        var claims=acceptable(credential,(iss,vct)->staffIssuers().contains(iss) && vct.equals(iss+"/vct/BankStaffCredential"));
+        require(credential.issuer().equals(claims.path("bank_id").asText()),"Wrong bank");
+        UUID staff=UUID.fromString(claims.path("staff_id").asText());
         if (!isActive(staff)) { refuse(id,"staff_inactive","Staff access is inactive"); return true; }
         var current=db.queryForMap("select issued_credential from bank_hire where id=?",staff);
         if (!(current.get("issued_credential") instanceof String stored && sameCredential(stored,claims,credential.holderKey()))) {
@@ -377,9 +423,7 @@ public class BankController {
         require(type.equals("staff")?staffIssuers().contains(iss)&&vct.equals(iss+"/vct/BankStaffCredential"):passports.accepts(iss,vct),"Wrong credential type"); require(c.has("exp") && c.path("exp").asLong()>Instant.now().getEpochSecond(),"Expired credential");
         UUID staff=null;
         if(type.equals("passport")) {
-            UUID hire=(UUID)tx.get("hire_id"); require(freshPassport(c,passportCheckAfter(hire)),"A fresh Passport check is required. Complete Identity Proofing again."); require(PassportEvidencePolicy.accepts(c),"Passport credential lacks acceptable proofing evidence or is expired"); require(!c.path("family_name").asText().isBlank() && !c.path("assurance_level").asText().isBlank(),"Missing identity or assurance");
-            LocalDate birth=LocalDate.parse(c.path("birth_date").asText());
-            require(db.update("update bank_hire set verified_given=?,verified_family=?,verified_birth=?,holder_jwk=?,status='REVIEW' where id=? and status='INVITED'",c.path("given_name").asText(),c.path("family_name").asText(),birth,verified.holderKeyConfirmed().orElseThrow().toString(),hire)==1,"Hire is not awaiting identity"); audit(hire,"IDENTITY_PRESENTED","applicant"); directoryChanged(hire);
+            identityPresented((UUID)tx.get("hire_id"),c,verified.holderKeyConfirmed().orElseThrow().toString());
         } else {
             // bank_id is the issuer the credential names: the bank's own address, or its tenant of the shared issuer.
             require(iss.equals(c.path("bank_id").asText()),"Wrong bank"); staff=UUID.fromString(c.path("staff_id").asText());

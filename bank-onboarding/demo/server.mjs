@@ -1,11 +1,14 @@
 import http from 'node:http';
 import {readFile} from 'node:fs/promises';
 import {resolve,extname} from 'node:path';
+import {ISSUER,BANK,VERIFIER,demoFetch} from './hosts.mjs';
 const root=resolve(import.meta.dirname,'../../..');
 const secret=(await readFile(new URL('./runtime/callback-secret',import.meta.url),'utf8')).trim();
 const events=[];
 const origins=new Set(['http://localhost:43100','http://localhost:43101']);
-const targets=new Set(['http://localhost:43192','http://localhost:43194']);
+const targets=new Set([ISSUER,BANK,VERIFIER]);
+// The demo wallet build trusts signed requests from the demo's own tenant CA, which is made on this machine (control.mjs).
+const tenantCa=await readFile(new URL('./runtime/tenant-ca/ca.pem',import.meta.url),'utf8');
 const mime={'.html':'text/html','.js':'text/javascript','.css':'text/css','.svg':'image/svg+xml','.json':'application/json','.png':'image/png','.woff2':'font/woff2'};
 const body=async req=>{let s='';for await(const chunk of req){s+=chunk;if(s.length>2000000)throw Error('Too large');}return JSON.parse(s||'{}');};
 for(const [port,folder] of [[43100,'oid4vci-wallet/www-showcase'],[43101,'identityproofing/app/dist-showcase']]) {
@@ -21,17 +24,19 @@ for(const [port,folder] of [[43100,'oid4vci-wallet/www-showcase'],[43101,'identi
    if(path==='/bridge/event'&&req.method==='GET'){res.end(JSON.stringify(events.shift()||{}));return;}
    if(path==='/bridge/http'){
     const data=await body(req);if(!targets.has(new URL(data.url).origin))throw Error('Non-demo destination');
-    const response=await fetch(data.url,{method:data.method,headers:data.headers,body:data.method==='GET'?undefined:typeof data.body==='string'?data.body:JSON.stringify(data.body),redirect:'error'});
-    const text=await response.text();let parsed;try{parsed=JSON.parse(text);}catch{parsed={};}res.end(JSON.stringify({status:response.status,body:parsed}));return;
+    const response=await demoFetch(data.url,{method:data.method,headers:data.headers,body:data.method==='GET'||data.body===undefined?undefined:typeof data.body==='string'?data.body:JSON.stringify(data.body)});
+    // A body that isn't JSON (a signed request object) is passed on as the text it is.
+    const text=await response.text();let parsed;try{parsed=JSON.parse(text);}catch{parsed=text;}res.end(JSON.stringify({status:response.status,body:parsed}));return;
    }
    if(path==='/bridge/proof'){
     const {sessionId}=await body(req);if(typeof sessionId!=='string'||!sessionId)throw Error('Missing session');
     const payload={session_id:sessionId,given_names:'MORGAN',surname:'EXAMPLE',date_of_birth:'1990-04-12',document_number:'RISK00001',nationality:'UTO',issuing_state:'UTO',date_of_expiry:'2099-12-31',liveness_passed:true,face_matched:true,sod_signature_valid:true,data_group_hashes_valid:true,csca_validated:true,revocation_checked:false,portrait_from_chip:true,active_authentication_valid:null};
-    const result=await fetch('http://localhost:43192/proofing/result',{method:'POST',headers:{'Content-Type':'application/json','X-Proofing-Secret':secret},body:JSON.stringify(payload)});
+    const result=await demoFetch(ISSUER+'/proofing/result',{method:'POST',headers:{'Content-Type':'application/json','X-Proofing-Secret':secret},body:JSON.stringify(payload)});
     res.statusCode=result.status;res.end('{}');return;
    }
    const base=resolve(root,folder),file=resolve(base,'.'+decodeURIComponent(path));if(!file.startsWith(base+'/')&&!file.startsWith(base+'\\')&&file!==base)throw Error('Invalid path');
    let bytes;let name=file;try{bytes=await readFile(file);}catch{name=resolve(base,'index.html');bytes=await readFile(name);}
+   if(port===43100&&name.endsWith('index.html'))bytes=Buffer.from(bytes.toString('utf8').replace('<head>','<head><script>window.showcaseVerifierCa='+JSON.stringify(tenantCa)+';</script>'));
    res.setHeader('Content-Type',mime[extname(name)]||'application/octet-stream');res.end(bytes);
   }catch{res.writeHead(400).end('{"error":"showcase request failed"}');}
  }).listen(port,'127.0.0.1',()=>console.log('Demo UI listening on localhost:'+port));

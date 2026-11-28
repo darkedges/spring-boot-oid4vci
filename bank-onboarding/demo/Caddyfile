@@ -1,0 +1,23 @@
+# HTTPS for the demo's names, with a certificate authority of the proxy's own. The same addresses work in the browser (which resolves
+# *.localhost to this machine) and between the containers (network aliases of the proxy).
+{
+	local_certs
+	skip_install_trust
+	admin off
+}
+
+https://bank.demo.localhost:43443 {
+	reverse_proxy bank:8094
+}
+
+https://issuer.demo.localhost:43443 {
+	reverse_proxy issuer:8092
+}
+
+https://verifier.demo.localhost:43443 {
+	reverse_proxy verifier:8090
+}
+
+https://authstack.demo.localhost:43443 {
+	reverse_proxy authstack:8000
+}

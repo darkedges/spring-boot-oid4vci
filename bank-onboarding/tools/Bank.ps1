@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([ValidateSet('help','env','doctor','setup','keys','passport-key','db-up','db-down','run','start','phone','build','test')][string] $Task = 'help')
+param([ValidateSet('help','env','doctor','setup','keys','passport-key','db-up','db-down','run','start','stop','logs','status','phone','build','test')][string] $Task = 'help')
 $ErrorActionPreference = 'Stop'
 $script:BankRoot = Split-Path $PSScriptRoot -Parent
 
@@ -183,6 +183,30 @@ function Start-Database {
     Read-DatabasePassword
     Invoke-Checked 'docker' @('compose','-f',(Join-Path $script:BankRoot 'docker-compose.yml'),'up','-d','--wait','--wait-timeout','60')
 }
+function Get-BankComposeArguments {
+    return @('compose','-f',(Join-Path $script:BankRoot 'docker-compose.yml'),'-f',(Join-Path $script:BankRoot 'docker-compose.bank.yml'))
+}
+function Start-BankContainer {
+    Initialize-KeyPaths
+    Read-DatabasePassword
+    foreach ($name in @('BANK_PRIVATE_JWK_FILE', 'PASSPORT_PUBLIC_JWK_FILE')) {
+        $file = [Environment]::GetEnvironmentVariable($name, 'Process')
+        if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "Missing key file: $file. Run make setup first." }
+        [Environment]::SetEnvironmentVariable($name, [IO.Path]::GetFullPath($file), 'Process')
+    }
+    Read-MailPassword
+    # A portal still running on the host would answer instead of the container.
+    $running = & docker compose -p bank-onboarding ps --quiet --status running bank
+    if (-not $running -and (Test-Connection -TargetName 'localhost' -TcpPort 8094 -Quiet)) {
+        throw 'Port 8094 is already in use. Stop the bank portal running on this machine (Ctrl+C in its terminal), then run make start again.'
+    }
+    # Compose must see only what this helper loaded: read directly, a blank line in .env would override a default with nothing.
+    $env:COMPOSE_DISABLE_ENV_FILE = '1'
+    $compose = Get-BankComposeArguments
+    & docker @compose up -d --build --wait --wait-timeout 180
+    if ($LASTEXITCODE -ne 0) { throw 'The bank did not start. See make logs.' }
+    Write-Host "Bank portal running in Docker: $env:BANK_BASE_URL/hr (make logs, make stop)"
+}
 function New-BankRuntimeJar {
     param([string] $SourceJar)
     Add-Type -AssemblyName System.IO.Compression
@@ -211,9 +235,8 @@ function New-BankRuntimeJar {
     } finally { $source.Dispose() }
 }
 function Start-Bank {
-    param([switch] $SettingsLoaded)
     $java = Assert-Java
-    if (-not $SettingsLoaded) { Import-BankSettings }
+    Import-BankSettings
     Initialize-KeyPaths
     Initialize-DatabaseConnection
     Read-DatabasePassword
@@ -248,7 +271,7 @@ function Invoke-BankTask {
     param([string] $Name)
     switch ($Name) {
         'help' {
-            Write-Host "make setup        Generate missing bank key and pin missing passport public key`nmake start        Setup keys, start PostgreSQL, load Terraform settings, run portal`nmake run          Load settings and run against an existing database`nmake db-up        Start PostgreSQL and wait for readiness`nmake db-down      Stop PostgreSQL and retain its data volume`nmake phone        Forward phone localhost:8094 over USB`nmake keys         Generate bank signing key only if missing`nmake passport-key Pin passport issuer public key only if missing`nmake build        Build sibling libraries and package bank with tests`nmake test         Build sibling dependencies and run bank/reactor tests`nmake doctor       Check Java and command availability`n`nSelect Java with JAVA_HOME (JDK 21+) or BANK_JAVA. Secrets come from the`ncalling shell, local .env, or secure prompts. Use make env to create .env. Run make phone`nin another terminal while make start is serving the portal."
+            Write-Host "make setup        Generate missing bank key and pin missing passport public key`nmake start        Setup keys, load settings, build and start the portal and PostgreSQL in Docker`nmake stop         Stop the portal and PostgreSQL, keeping the data`nmake logs         Follow the portal's log`nmake status       Show the containers`nmake run          Development: run the packaged JAR on this machine against an existing database`nmake db-up        Start PostgreSQL and wait for readiness`nmake db-down      Stop PostgreSQL and retain its data volume`nmake phone        Forward phone localhost:8094 over USB`nmake keys         Generate bank signing key only if missing`nmake passport-key Pin passport issuer public key only if missing`nmake build        Build sibling libraries and package bank with tests`nmake test         Build sibling dependencies and run bank/reactor tests`nmake doctor       Check Java and command availability`n`nSelect Java with JAVA_HOME (JDK 21+) or BANK_JAVA. Secrets come from the`ncalling shell, local .env, or secure prompts. Use make env to create .env. Run make phone`nto forward a USB-connected phone to the portal."
         }
         'env' { Initialize-BankEnv }
         'doctor' {
@@ -265,7 +288,11 @@ function Invoke-BankTask {
         'db-up' { Start-Database }
         'db-down' { Read-DatabasePassword; Invoke-Checked 'docker' @('compose','-f',(Join-Path $script:BankRoot 'docker-compose.yml'),'stop') }
         'run' { Start-Bank }
-        'start' { Assert-Java | Out-Null; Import-BankSettings; Initialize-BankKey; Initialize-PassportKey; Start-Database; Start-Bank -SettingsLoaded }
+        'start' { Import-BankSettings; Initialize-BankKey; Initialize-PassportKey; Start-BankContainer }
+        # By project name: stopping, logs and status need no settings or secrets.
+        'stop' { Invoke-Checked 'docker' @('compose','-p','bank-onboarding','stop') }
+        'logs' { Invoke-Checked 'docker' @('compose','-p','bank-onboarding','logs','--follow','--tail','200','bank') }
+        'status' { Invoke-Checked 'docker' @('compose','-p','bank-onboarding','ps','--all') }
         'phone' { Invoke-Checked (Get-AdbExecutable) @('reverse','tcp:8094','tcp:8094') }
         'build' { Invoke-BankBuild }
         'test' { Invoke-BankBuild -TestOnly }

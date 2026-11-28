@@ -7,13 +7,17 @@ This module runs separately on port 8094 and reuses the OID4VCI issuer and OID4V
 Use GNU Make and PowerShell 7 (`make` and `pwsh` on PATH). From `oid4vci/bank-onboarding`:
 
 ```powershell
-# Select JDK 21+. This machine has this JDK installed:
-$env:JAVA_HOME = 'C:\development\utils\java\jdk25.0.18'
-make doctor
 make start
 ```
 
-`make start` reads the applied Terraform `bank_environment` output, prepares missing keys, starts PostgreSQL and waits for its health check, then runs the existing bank JAR in the foreground. For the OIDC secret it first uses `BANK_OIDC_CLIENT_SECRET` from your shell, then the applied client secret from Terraform state, then Terraform evaluation of `client_secret` (including `terraform.tfvars`, auto-loaded tfvars and `TF_VAR_client_secret`). It reads state through `terraform state pull`, supporting the configured backend. Terraform evaluates configuration rather than the helper parsing HCL. `BANK_DATABASE_PASSWORD` is reused from your shell. Any remaining missing secrets are prompted for securely. Enter the existing applied OIDC secret and reuse the database's original password. The helper captures the secret without printing it or writing another secret file. OIDC prompts repeat only if no usable Terraform or environment secret is available; database prompts repeat unless your shell supplies its password. A configured secret that differs from the applied state is not used until applied, unless you explicitly override `BANK_OIDC_CLIENT_SECRET`. Ctrl+C stops the portal; PostgreSQL stays running.
+The portal and its database run in Docker, so Java and Maven are not needed to run it. The image is built from this
+repository and the sibling `oid4vp` repository (set `BANK_OID4VP_DIR` if it is elsewhere). The portal restarts after a crash
+or a reboot. After pulling new code, run `make start` again to rebuild it. `make logs` follows its log, `make status` shows the
+containers and `make stop` stops them, keeping the data.
+
+`make start` reads the applied Terraform `bank_environment` output, prepares missing keys, then builds and starts the portal and PostgreSQL and waits for both to be healthy. For the OIDC secret it first uses `BANK_OIDC_CLIENT_SECRET` from your shell, then the applied client secret from Terraform state, then Terraform evaluation of `client_secret` (including `terraform.tfvars`, auto-loaded tfvars and `TF_VAR_client_secret`). It reads state through `terraform state pull`, supporting the configured backend. Terraform evaluates configuration rather than the helper parsing HCL. `BANK_DATABASE_PASSWORD` is reused from your shell. Any remaining missing secrets are prompted for securely. Enter the existing applied OIDC secret and reuse the database's original password. The helper captures the secret without printing it or writing another secret file. OIDC prompts repeat only if no usable Terraform or environment secret is available; database prompts repeat unless your shell supplies its password. A configured secret that differs from the applied state is not used until applied, unless you explicitly override `BANK_OIDC_CLIENT_SECRET`. The settings are given to the container when it is created, so anyone who can administer Docker on this machine can read them (`docker inspect`). The two key files are mounted read-only.
+
+The container gets one trusted passport issuer (`PASSPORT_ISSUER`). To trust several (see Configuration), add their `BANK_PASSPORT_ISSUERS_*` variables and key mounts in your own Compose override.
 
 For an explicit localhost-only USB demonstration, in a second terminal in the same directory:
 
@@ -33,7 +37,10 @@ Other targets:
 | `make passport-key` | Fetch and pin one public ES256/P-256 signing key from the configured issuer's `/jwks`, only if absent. |
 | `make db-up`        | Start PostgreSQL and wait for readiness.                                                               |
 | `make db-down`      | Stop PostgreSQL, retaining the data volume.                                                            |
-| `make run`          | Load settings and run the JAR against an already running database.                                     |
+| `make stop`         | Stop the portal and PostgreSQL, retaining the data volume.                                             |
+| `make logs`         | Follow the portal's log.                                                                               |
+| `make status`       | Show the containers.                                                                                   |
+| `make run`          | Development: run the packaged JAR on this machine against an already running database.                 |
 | `make build`        | Install sibling OID4VP dependencies and package the bank reactor with tests.                           |
 | `make test`         | Install sibling dependencies and run bank/reactor tests.                                               |
 
@@ -41,7 +48,7 @@ Existing signing and passport trust keys are retained. The default key directory
 
 Optional environment overrides: `BANK_JAVA` (Java executable), `BANK_MVN`, `BANK_MAVEN_REPO`, `BANK_ADB`, `BANK_SECRET_DIR`, `BANK_PRIVATE_JWK_FILE`, `PASSPORT_PUBLIC_JWK_FILE`, `BANK_TERRAFORM_DIR`, and `BANK_JAR`. ADB is found via PATH, `ANDROID_HOME`, `ANDROID_SDK_ROOT`, or the usual local Android SDK directory. Override the PowerShell command with `make PWSH=pwsh.exe help` if needed. Build selects the same JDK for Maven and the portal.
 
-Use `make build` if the packaged JAR is missing or sources have changed. `make start` does not rebuild, apply Terraform, or redeploy the mobile apps. Settings loaded inside Make apply to that process and its children; they do not modify the calling shell.
+`make run` needs JDK 21+ (`JAVA_HOME`) and a packaged JAR: use `make build` if it is missing or sources have changed. `make start` rebuilds the image but does not apply Terraform or redeploy the mobile apps. Settings loaded inside Make apply to that process and its children; they do not modify the calling shell.
 
 ### Docker address pool exhaustion
 
@@ -56,13 +63,13 @@ An address pool exhaustion error does not require deleting the PostgreSQL volume
 
 ### Database host port
 
-PostgreSQL is published on `127.0.0.1:15432`; it still listens on 5432 inside its container. Port 5432 on this development machine belongs to another application's database. `make start` and `make run` supply `jdbc:postgresql://localhost:15432/bank` to the existing packaged JAR automatically, so this port change does not require a rebuild.
+PostgreSQL is published on `127.0.0.1:15432`; it still listens on 5432 inside its container. Port 5432 on this development machine belongs to another application's database. The portal in Docker reaches it as `postgres:5432` on the Compose network. `make run` supplies `jdbc:postgresql://localhost:15432/bank` to the packaged JAR on this machine.
 
-Set `BANK_DATABASE_PORT` in the calling shell to use another free host port. Compose and the helper's generated JDBC URL both use it. An explicit `BANK_DATABASE_URL` overrides the generated URL; update or clear an old URL pointing to port 5432 before starting the bank. Re-running `make start` recreates the bank container with its new port mapping while retaining its named data volume.
+Set `BANK_DATABASE_PORT` in the calling shell to use another free host port. Compose and the helper's generated JDBC URL both use it. An explicit `BANK_DATABASE_URL` overrides the generated URL for `make run` only; update or clear an old URL pointing to port 5432. Re-running `make start` recreates the database container with its new port mapping while retaining its named data volume.
 
-### Rebuilds while the portal is running
+### Rebuilds while `make run` is serving
 
-The Make startup helper now validates the selected Spring Boot JAR and runs a unique snapshot under `%LOCALAPPDATA%/ExampleBank/runtime` (override with `BANK_RUNTIME_DIR`). Rebuilding or cleaning Maven's `target` directory cannot change the active JVM's JAR. The helper removes only its own snapshot after the Java process exits. A process started directly from a JAR in `target` must be stopped before rebuilding that file.
+`make run` validates the selected Spring Boot JAR and runs a unique snapshot under `%LOCALAPPDATA%/ExampleBank/runtime` (override with `BANK_RUNTIME_DIR`). Rebuilding or cleaning Maven's `target` directory cannot change the active JVM's JAR. The helper removes only its own snapshot after the Java process exits. A process started directly from a JAR in `target` must be stopped before rebuilding that file.
 
 The earlier live rebuild replaced the original default JAR with a thin archive before repackaging failed. If that archive is still selected, the helper rejects it with a clear error. Stop the old portal, then either run `make build` to restore the standard executable JAR or select `target/bank-onboarding-0.1.0-SNAPSHOT-diagnostic.jar` through `BANK_JAR`. Do not change Logback dependencies to address class-loading errors from an overwritten running JAR.
 
@@ -73,7 +80,7 @@ The canonical bank origin is now **https://hr.bank.darkedges.com**. The app stil
 1. From `terraform/pingfederate`, run `terraform plan -out=bank-hr.tfplan`, review the callback change, then `terraform apply bank-hr.tfplan`. The local `terraform.tfvars` and the default/example configuration have been updated. Reuse the existing secrets. Apply before restarting: the Make helper reads the canonical URL from applied Terraform outputs.
 2. In your existing Cloudflare Tunnel, add the published hostname `hr.bank.darkedges.com` and route all paths to the bank service. Use `http://localhost:8094` if cloudflared runs on this Windows host. For a Docker-hosted connector, use `http://host.docker.internal:8094`. For the existing Kubernetes connector, use the Windows host's reachable LAN address, for example `http://10.0.0.35:8094` on the inspected machine, and verify reachability from that connector. Do not use the connector container/pod's own localhost for a service running on Windows.
 3. Allow Cloudflare to create the tunnel DNS route for this hostname. This project does not contain Cloudflare account credentials and has not applied tunnel/DNS changes. See [Cloudflare published application routing](https://developers.cloudflare.com/tunnel/concepts/routing/).
-4. Stop the old bank process. Select the latest normal JAR and start it: `$env:BANK_JAR = "$PWD\target\bank-onboarding-0.1.0-SNAPSHOT.jar"`, then `make start`.
+4. Run `make start`. If a portal is still running directly on the machine, stop it first.
 5. Open `https://hr.bank.darkedges.com/hr` and sign in again. Invitations, wallet request URLs, issuer metadata, and new staff credentials use the public origin. USB forwarding is unnecessary for this public-host flow.
 
 The tunnel must preserve the public Host and HTTPS forwarding information. Keep direct access to the HTTP origin private so forwarding headers come from your trusted proxy. Native wallet calls to `/vp/**`, `/.well-known/**`, `/token`, `/nonce`, `/credential`, `/jwks`, and `/vct/**` must reach the bank service without an interactive Cloudflare Access or browser challenge screen. Set `BANK_TOKEN_DEBUG_ENABLED=false` when token inspection is no longer needed.
@@ -141,11 +148,10 @@ To inspect why the provider is not releasing roles, enable the debug view before
 
 ```powershell
 $env:BANK_TOKEN_DEBUG_ENABLED = 'true'
-$env:BANK_JAR = "$PWD\target\bank-onboarding-0.1.0-SNAPSHOT-token-debug.jar"
 make start
 ```
 
-Stop the previous portal first. Open `/account/access` and sign in again after restarting. The token-debug build is packaged separately from the earlier diagnostic build. A later normal `make build` also includes this feature.
+`make start` recreates the portal with the setting. Open `/account/access` and sign in again.
 
 When enabled, the page shows the ID token's login-validated claims, UserInfo claims if available, the access token's scopes/expiry, decoded JWT access-token header/claims when possible, and expandable raw ID/access tokens with copy buttons. Opaque or encrypted access tokens are shown as raw strings with an explanation instead of a parsing error. The access token is retrieved from this user's authorized-client repository entry. Refresh tokens and client secrets are not exposed.
 
@@ -293,7 +299,6 @@ $env:BANK_SMTP_USERNAME = 'hr@sandbox0fed9dd3c01d4a00b5315d38226da368.mailgun.or
 $env:BANK_MAIL_FROM = 'hr@sandbox0fed9dd3c01d4a00b5315d38226da368.mailgun.org'
 $smtpPassword = Read-Host 'Mailgun SMTP password' -AsSecureString #
 $env:BANK_SMTP_PASSWORD = [Net.NetworkCredential]::new('', $smtpPassword).Password
-make build
 make start
 ```
 
@@ -374,7 +379,7 @@ Every Make target automatically reads `bank-onboarding/.env`. Run `make env` to
 create it from `.env.example` if absent; existing files are never overwritten.
 The template lists bank branding, SMTP, database, OIDC, keys, Java, build, and
 network settings. Edit `.env` once, then run `make start` without setting shell
-variables each time. No bank JAR rebuild is needed for this helper change.
+variables each time.
 
 Existing nonempty shell variables override `.env`; clear an old override with
 `Remove-Item Env:BANK_NAME` (for example) if you want the file value. Blank entries

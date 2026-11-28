@@ -218,8 +218,8 @@ The settings are the `credential_verifier_settings` output of AuthStack's `terra
 
 - **SD-JWT VC only, one credential query per registration.** The mobile wallet can't present mdoc, and refuses a query with
   `credential_sets`.
-- **Trusted issuers:** the ZKP issuer and the bank's tenant by their `jwksUri`, and the bank's old issuer by its pinned public key
-  (until 1.6 step 4). Not the tenant CA as an `x5cTrustAnchors` entry: it certifies every tenant, so it doesn't say which of them signed.
+- **Trusted issuers:** the ZKP issuer by its pinned public key, as the bank saves it (change both together), the bank's tenant by its
+  `jwksUri`, and the bank's old issuer by its pinned public key (until 1.6 step 4). Not the tenant CA as an `x5cTrustAnchors` entry: it certifies every tenant, so it doesn't say which of them signed.
 - **mdoc, later** (oid4vci-wallet#3). The verifier looks up an mdoc's issuer by its **document type**, as an mdoc names no issuer: its
   trust entry is `{ "issuer": "com.darkedges.bank.staff.1", "x5cTrustAnchors": […] }`, and because a CA anchor there accepts any
   certificate that CA issued, it needs the verifier to pin the tenant first. Asking for either format then needs `credential_sets`
@@ -264,8 +264,8 @@ Each step is its own PR and can ship without the next.
   result when the page or the Journey API asks for the status. As the verifier hands out claims rather than the credential, "superseded"
   compares the issuer, issue and expiry times and holder key with the stored credential.
 - Step 8, passport checks, is built behind `BANK_VERIFY_PASSPORT_VIA`: the bank passes `passport_check_after` to the verifier and
-  applies the same freshness and evidence rules to what it collects. The verifier's trust (the tenant's `trustedIssuers`) replaces the
-  bank's pinned passport key. A result the bank can't accept, or can't save, is not available again: the applicant starts a new check.
+  applies the same freshness and evidence rules to what it collects. The signature is checked by the verifier, against the passport
+  key pinned in the tenant's `trustedIssuers` rather than the bank's file. A result the bank can't accept, or can't save, is not available again: the applicant starts a new check.
 
 ## Decisions
 
